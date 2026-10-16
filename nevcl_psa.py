@@ -36,7 +36,9 @@ class SweepPanel(QWidget):
         # 表示／非表示とオフセットはプロットの近くで調整できるようにする。
         channel_group=QGroupBox('プロットするチャンネル'); channel_layout=QVBoxLayout(channel_group)
         self.channel_plot_table=QTableWidget(0,3); self.channel_plot_table.setHorizontalHeaderLabels(['Plot','チャンネル','Offset (V)']); self.channel_plot_table.horizontalHeader().setSectionResizeMode(1,QHeaderView.ResizeMode.Stretch); self.channel_plot_table.verticalHeader().hide(); self.channel_plot_table.setMaximumHeight(145); channel_layout.addWidget(self.channel_plot_table); pv.addWidget(channel_group)
-        self.fig,self.ax,self.canvas,self.plot_toolbar=_plot(plots); self.ax.set_box_aspect(1); self.save_button=QPushButton('取得データをCSV保存'); pv.addWidget(self.save_button); split.addWidget(ctrl); split.addWidget(plots); split.setSizes([380,700])
+        self.fig,self.ax,self.canvas,self.plot_toolbar=_plot(plots); self.ax.set_box_aspect(1)
+        save_buttons=QHBoxLayout(); self.save_button=QPushButton('取得データをCSV保存'); self.save_image_button=QPushButton('プロット画像保存'); save_buttons.addWidget(self.save_button); save_buttons.addWidget(self.save_image_button); pv.addLayout(save_buttons)
+        split.addWidget(ctrl); split.addWidget(plots); split.setSizes([380,700])
 
 class ScopePanel(QWidget):
     """NI-Scope union／チャンネル設定と最新波形表示の画面。"""

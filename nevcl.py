@@ -53,7 +53,7 @@ class NevClientWindow(QMainWindow):
         self.tabs=QTabWidget(); split.addWidget(self.tabs); split.setSizes([570,880])
         self.sweep_panel=SweepPanel(); self.fig=self.sweep_panel.fig; self.ax=self.sweep_panel.ax; self.canvas=self.sweep_panel.canvas
         self.sweep_mode=self.sweep_panel.mode; self.sweep_param=self.sweep_panel.parameter; self.sweep_start=self.sweep_panel.start; self.sweep_stop=self.sweep_panel.stop; self.sweep_steps=self.sweep_panel.steps; self.sweep_dir=self.sweep_panel.direction; self.idelay=self.sweep_panel.initial_delay; self.period=self.sweep_panel.period; self.delay=self.sweep_panel.delay; self.frequency=self.sweep_panel.frequency; self.run_btn=self.sweep_panel.run_button; self.stop_btn=self.sweep_panel.stop_button
-        self.error_bar=self.sweep_panel.error_bar; self.run_btn.clicked.connect(self.start_sweep); self.stop_btn.clicked.connect(self.stop_sweep); self.sweep_panel.save_button.clicked.connect(self.save_psa_data); self.sweep_mode.currentTextChanged.connect(self._select_sweep_mode); self.tabs.addTab(self.sweep_panel,'Parameter Sweeper')
+        self.error_bar=self.sweep_panel.error_bar; self.run_btn.clicked.connect(self.start_sweep); self.stop_btn.clicked.connect(self.stop_sweep); self.sweep_panel.save_button.clicked.connect(self.save_psa_data); self.sweep_panel.save_image_button.clicked.connect(self.save_psa_plot_image); self.sweep_mode.currentTextChanged.connect(self._select_sweep_mode); self.tabs.addTab(self.sweep_panel,'Parameter Sweeper')
         self.scope_panel=ScopePanel(); self.union_combo=self.scope_panel.union; self.scope_table=self.scope_panel.channel_table; self.raw_toggle=self.scope_panel.raw_toggle; self.fig_raw=self.scope_panel.fig; self.ax_raw=self.scope_panel.ax; self.canvas_raw=self.scope_panel.canvas; self.scope_panel.apply_button.clicked.connect(self.apply_scope); self.raw_toggle.toggled.connect(lambda _checked:self._update_plots()); self.tabs.addTab(self.scope_panel,'NI-Scope / Waveform')
         self.device_panel=DevicePanel(); self.device_table=self.device_panel.device_table; self.tabs.addTab(self.device_panel,'DAQmx Devices')
         self.log=QPlainTextEdit(); self.log.setReadOnly(True); self.tabs.addTab(self.log,'通信ログ')
@@ -415,6 +415,18 @@ class NevClientWindow(QMainWindow):
                 writer.writerow(headers)
                 for r,param in enumerate(self.sweep_param_values):writer.writerow([param]+[col[r] if r<len(col) else '' for col in columns])
             self._log('PSA data saved: '+path)
+        except Exception as e:self._error(str(e))
+
+    def save_psa_plot_image(self):
+        # PSAプロット画像の保存先をclientフォルダにした状態で保存ダイアログを開く。
+        client_dir=Path(__file__).resolve().parent
+        default_path=client_dir/'output.png'
+        path,_=QFileDialog.getSaveFileName(self,'プロット画像保存',str(default_path),'PNG画像 (*.png)')
+        if not path:return
+        if Path(path).suffix.lower()!='.png':path += '.png'
+        try:
+            self.fig.savefig(path,dpi=200,bbox_inches='tight')
+            self._log('PSA plot image saved: '+path)
         except Exception as e:self._error(str(e))
 
     def closeEvent(self,event):
