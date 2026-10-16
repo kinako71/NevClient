@@ -8,7 +8,7 @@
 import csv, sys
 from pathlib import Path
 from datetime import datetime
-from PyQt6.QtCore import Qt, QTimer, QObject, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, QObject, QThread, pyqtSignal, QSettings
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QSplitter, QGroupBox, QFormLayout, QPushButton, QTableWidget, QTableWidgetItem,
     QFileDialog, QMessageBox, QLabel, QTabWidget, QDoubleSpinBox, QComboBox,
@@ -33,6 +33,8 @@ class NevClientWindow(QMainWindow):
     def __init__(self,address='localhost'):
         # CSV、機器接続、PSAの状態を初期化して画面を組み立てる。
         super().__init__(); self.setWindowTitle('NEV Client — PyQt6'); self.resize(1450,950)
+        # チャンネルごとのプロットオフセットを次回起動時にも読み込めるよう保存する。
+        self.plot_offset_settings=QSettings('KohnoLab','NEVClientPyQt')
         self.address=address; self.tcp=None; self.daq=None; self.scope=None; self.csv_model=None; self.csv_path=None; self.raw=[]; self.cols={}; self.pset_cols=[]; self.active_set=None
         self.sweep_active=False; self.sweep_bookmark=0; self.sweep_dirs=[]; self.psa_data=[]; self.channel_rows=[]; self.scope_channels=[]; self.sweep_channel_info=[]; self.sweep_data=[]; self.sweep_param_values=[]
         self._build_ui(); self.timer=QTimer(self); self.timer.setInterval(400); self.timer.timeout.connect(self.poll_sweep)
@@ -110,7 +112,9 @@ class NevClientWindow(QMainWindow):
         for r,(di,d,ch) in enumerate(self.scope_channels):
             show=QCheckBox(); show.setChecked(True); show.toggled.connect(self._plot_channel_settings_changed); plot_table.setCellWidget(r,0,show)
             plot_table.setItem(r,1,QTableWidgetItem(f'{d.name}/CH{ch}'))
-            offset=QDoubleSpinBox(); offset.setRange(-10,10); offset.setSingleStep(.001); offset.setDecimals(3); offset.valueChanged.connect(self._plot_channel_settings_changed); plot_table.setCellWidget(r,2,offset)
+            offset=QDoubleSpinBox(); offset.setRange(-10,10); offset.setSingleStep(.001); offset.setDecimals(3)
+            offset_key=f'plot_offsets/{d.name}/CH{ch}'; offset.setValue(self.plot_offset_settings.value(offset_key,0.0,type=float))
+            offset.valueChanged.connect(lambda value,key=offset_key:self.plot_offset_settings.setValue(key,value)); offset.valueChanged.connect(self._plot_channel_settings_changed); plot_table.setCellWidget(r,2,offset)
 
     def apply_scope(self):
         # チャンネル表の有効状態・レンジ・結合をサーバー側unionへ送る。
@@ -383,7 +387,14 @@ class NevClientWindow(QMainWindow):
             if mode=='BDMODE':
                 headers.extend([f'[CH{i} min]',f'[CH{i} max]']); columns.extend([[(min(x) if x else 0)+offset for x in series],[(max(x) if x else 0)+offset for x in series]])
             else:
-                headers.extend([f'[CH{i} mean]',f'[CH{i} stdev]']); columns.extend([[(sum(x)/len(x) if x else 0)+offset for x in series],[(sum((v-sum(x)/len(x))**2 for v in x)/len(x))**0.5 if x else 0 for x in series]])
+                # 平均を各サンプルごとに再計算せず、区間を一度走査して統計量を作る。
+                means=[]; stdevs=[]
+                for samples in series:
+                    if not samples:means.append(0); stdevs.append(0); continue
+                    mean=sum(samples)/len(samples)
+                    means.append(mean+offset)
+                    stdevs.append((sum((value-mean)**2 for value in samples)/len(samples))**0.5)
+                headers.extend([f'[CH{i} mean]',f'[CH{i} stdev]']); columns.extend([means,stdevs])
         try:
             with open(path,'w',newline='',encoding='utf-8') as f:
                 writer=csv.writer(f); f.write('# psa data (PyQt6 NEV client)\n'); f.write('# '+datetime.now().strftime('%d/%m/%Y %H:%M:%S')+'\n#\n')
