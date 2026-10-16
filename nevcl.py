@@ -112,7 +112,7 @@ class NevClientWindow(QMainWindow):
         for r,(di,d,ch) in enumerate(self.scope_channels):
             show=QCheckBox(); show.setChecked(True); show.toggled.connect(self._plot_channel_settings_changed); plot_table.setCellWidget(r,0,show)
             plot_table.setItem(r,1,QTableWidgetItem(f'{d.name}/CH{ch}'))
-            offset=QDoubleSpinBox(); offset.setRange(-10,10); offset.setSingleStep(.001); offset.setDecimals(3)
+            offset=QDoubleSpinBox(); offset.setRange(-10,10); offset.setSingleStep(.0001); offset.setDecimals(4)
             offset_key=f'plot_offsets/{d.name}/CH{ch}'; offset.setValue(self.plot_offset_settings.value(offset_key,0.0,type=float))
             offset.valueChanged.connect(lambda value,key=offset_key:self.plot_offset_settings.setValue(key,value)); offset.valueChanged.connect(self._plot_channel_settings_changed); plot_table.setCellWidget(r,2,offset)
 

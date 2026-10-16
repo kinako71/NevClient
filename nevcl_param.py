@@ -52,7 +52,7 @@ class ParameterPanel(QWidget):
             side=0 if index<half else 1; row=index if side==0 else index-half; base=side*3
             id_item=QTableWidgetItem(str(ids[index] if index<len(ids) else '')); id_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter); id_item.setFlags(id_item.flags() & ~Qt.ItemFlag.ItemIsEditable); self.param_table.setItem(row,base,id_item)
             name=QTableWidgetItem(str(label)); name.setToolTip(str(label)); name.setFlags(name.flags() & ~Qt.ItemFlag.ItemIsEditable); self.param_table.setItem(row,base+1,name)
-            spin=QDoubleSpinBox(); spin.setRange(0,2.5); spin.setSingleStep(.0001); spin.setDecimals(4); spin.setKeyboardTracking(False)
+            spin=QDoubleSpinBox(); spin.setRange(0,2.5); spin.setSingleStep(.001); spin.setDecimals(4); spin.setKeyboardTracking(False)
             try:spin.setValue(float(value))
             except (TypeError,ValueError):spin.setValue(0)
             spin.valueChanged.connect(lambda val,i=index:on_change(i,val)); self.param_table.setCellWidget(row,base+2,spin); self.value_widgets.append(spin)
