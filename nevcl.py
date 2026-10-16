@@ -102,12 +102,15 @@ class NevClientWindow(QMainWindow):
         self.scope_table.setRowCount(len(self.scope_channels))
         for r,(di,d,ch) in enumerate(self.scope_channels):
             active=QCheckBox(); active.setChecked(True); self.scope_table.setCellWidget(r,0,active)
-            values=[d.name,str(ch),f'{d.name}/CH{ch}','10','DC']
+            values=[d.name,str(ch),f'{d.name}/CH{ch}','2']
             for c,val in enumerate(values,1):self.scope_table.setItem(r,c,QTableWidgetItem(val))
-            self.scope_table.item(r,5).setText('DC')
-            # coupling selector is editable via a combo box
+            # NI-Scope側は取得に使うレンジと結合だけを設定する。
             combo=QComboBox(); combo.addItems(['DC','AC','GND']); combo.setCurrentText('DC'); self.scope_table.setCellWidget(r,5,combo)
-            self.scope_table.item(r,4).setText('2')
+        plot_table=self.sweep_panel.channel_plot_table; plot_table.setRowCount(len(self.scope_channels))
+        for r,(di,d,ch) in enumerate(self.scope_channels):
+            show=QCheckBox(); show.setChecked(True); show.toggled.connect(self._plot_channel_settings_changed); plot_table.setCellWidget(r,0,show)
+            plot_table.setItem(r,1,QTableWidgetItem(f'{d.name}/CH{ch}'))
+            offset=QDoubleSpinBox(); offset.setRange(-10,10); offset.setSingleStep(.001); offset.setDecimals(3); offset.valueChanged.connect(self._plot_channel_settings_changed); plot_table.setCellWidget(r,2,offset)
 
     def apply_scope(self):
         # チャンネル表の有効状態・レンジ・結合をサーバー側unionへ送る。
@@ -276,7 +279,7 @@ class NevClientWindow(QMainWindow):
                     active=self.scope_table.cellWidget(r,0).isChecked()
                     if active:conf.append([float(self.scope_table.item(r,4).text()),self.scope_table.cellWidget(r,5).currentText()])
                     else:conf.append(['*','*'])
-                    channel_info.append({'name':self.scope_table.item(r,3).text(),'active':active,'device':d,'channel':c,'range':self.scope_table.item(r,4).text(),'coupling':self.scope_table.cellWidget(r,5).currentText()})
+                    channel_info.append({'name':self.scope_table.item(r,3).text(),'active':active,'show':self.sweep_panel.channel_plot_table.cellWidget(r,0).isChecked(),'voffset':self.sweep_panel.channel_plot_table.cellWidget(r,2).value(),'table_row':r,'device':d,'channel':c,'range':self.scope_table.item(r,4).text(),'coupling':self.scope_table.cellWidget(r,5).currentText()})
                 self.scope.set_union_channelConf(union,di,0,conf)
                 nchan+=devscope.N_channels
             freq=self.frequency.currentData(); dlen=int((self.period.value()+self.delay.value())*freq)
@@ -324,19 +327,30 @@ class NevClientWindow(QMainWindow):
                     direction=self.sweep_dirs.pop(0); self.sweep_bookmark=0; start=self.sweep_start.value() if direction>0 else self.sweep_stop.value(); end=self.sweep_stop.value() if direction>0 else self.sweep_start.value(); idx=self._labels().index(self.sweep_label); row=self.raw[idx+1]; dev=self.daq.get_devinfo(row[self.cols['DEV']],row[self.cols['CH']].split('-',1)[0]); ch=int(row[self.cols['CH']].split('-',1)[1]); self.scope.set_psa(self.sweep_union,[dev.taskType,dev.taskNo,ch],[start,end,self.sweep_steps.value()],int(self.delay.value()*self.sweep_freq)); self.scope.run_psa()
                 else:self.stop_sweep()
         except Exception as e:self.stop_sweep(); self._error(str(e))
+    def _plot_channel_settings_changed(self,*_args):
+        # 表での表示切替・オフセット変更を既存データへ即時反映する。
+        for info in self.sweep_channel_info:
+            r=info.get('table_row')
+            if r is None or r>=self.scope_table.rowCount():continue
+            info['show']=self.sweep_panel.channel_plot_table.cellWidget(r,0).isChecked()
+            info['voffset']=self.sweep_panel.channel_plot_table.cellWidget(r,2).value()
+        if self.sweep_data and hasattr(self,'sweep_label'):
+            self._update_plots()
+
     def _update_plots(self):
         # 取り込んだデータから掃引グラフと最新波形を再描画する。
-        self.ax.clear(); self.ax.grid(True)
+        self.ax.clear(); self.ax.set_box_aspect(1); self.ax.grid(True)
         colors=['#ff0000','#0000ff','#00aa00','#ff00ff','#cc9900','#00aaaa','#883355','#335588']
         for i,series in enumerate(self.sweep_data):
             info=self.sweep_channel_info[i] if i<len(self.sweep_channel_info) else {'active':True,'name':f'CH{i}'}
-            if not info['active']:continue
+            if not info.get('show',info['active']):continue
             color=colors[i%len(colors)]; name=info['name']
+            offset=info.get('voffset',0.0)
             if self.sweep_operation=='BDMODE':
-                low=[min(seg) if seg else 0 for seg in series]; high=[max(seg) if seg else 0 for seg in series]
+                low=[(min(seg) if seg else 0)+offset for seg in series]; high=[(max(seg) if seg else 0)+offset for seg in series]
                 x=self.sweep_param_values[:len(series)]; self.ax.plot(x,low,label=f'{name} min',color=color); self.ax.plot(x,high,label=f'{name} max',color=color)
             else:
-                ys=[sum(seg)/len(seg) if seg else 0 for seg in series]
+                ys=[(sum(seg)/len(seg) if seg else 0)+offset for seg in series]
                 if self.error_bar.isChecked():
                     errs=[(sum((v-mean)**2 for v in seg)/len(seg))**.5 if seg else 0 for seg,mean in zip(series,ys)]
                     self.ax.errorbar(self.sweep_param_values[:len(ys)],ys,yerr=errs,label=name,color=color,linestyle='solid',capsize=2)

@@ -33,7 +33,11 @@ class SweepPanel(QWidget):
         form.addRow(self.error_bar)
         buttons=QHBoxLayout(); self.run_button=QPushButton('開始'); self.stop_button=QPushButton('停止'); self.stop_button.setEnabled(False); buttons.addWidget(self.run_button); buttons.addWidget(self.stop_button); form.addRow(buttons); controls.addWidget(cfg)
         group=QGroupBox('NCMODE / BDMODE 固定値'); box=QVBoxLayout(group); self.override_table=QTableWidget(0,3); self.override_table.setHorizontalHeaderLabels(['モード','パラメータ','値']); box.addWidget(self.override_table); controls.addWidget(group,1)
-        plots=QWidget(); pv=QVBoxLayout(plots); self.fig,self.ax,self.canvas,self.plot_toolbar=_plot(plots); self.save_button=QPushButton('取得データをCSV保存'); pv.addWidget(self.save_button); split.addWidget(ctrl); split.addWidget(plots); split.setSizes([380,700])
+        plots=QWidget(); pv=QVBoxLayout(plots)
+        # 表示／非表示とオフセットはプロットの近くで調整できるようにする。
+        channel_group=QGroupBox('プロットするチャンネル'); channel_layout=QVBoxLayout(channel_group)
+        self.channel_plot_table=QTableWidget(0,3); self.channel_plot_table.setHorizontalHeaderLabels(['Plot','チャンネル','Offset (V)']); self.channel_plot_table.horizontalHeader().setSectionResizeMode(1,QHeaderView.ResizeMode.Stretch); self.channel_plot_table.verticalHeader().hide(); self.channel_plot_table.setMaximumHeight(145); channel_layout.addWidget(self.channel_plot_table); pv.addWidget(channel_group)
+        self.fig,self.ax,self.canvas,self.plot_toolbar=_plot(plots); self.ax.set_box_aspect(1); self.save_button=QPushButton('取得データをCSV保存'); pv.addWidget(self.save_button); split.addWidget(ctrl); split.addWidget(plots); split.setSizes([380,700])
 
 class ScopePanel(QWidget):
     """NI-Scope union／チャンネル設定と最新波形表示の画面。"""
