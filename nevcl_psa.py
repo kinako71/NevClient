@@ -31,8 +31,7 @@ class SweepPanel(QWidget):
         self.direction=QComboBox(); self.direction.addItems(['↓','↑','↓↑','↑↓']); self.initial_delay=_spin(0,100,.001); self.initial_delay.setValue(.5); self.period=_spin(.001,100,.001); self.period.setValue(.25); self.delay=_spin(0,100,.001); self.delay.setValue(.05); self.frequency=QComboBox(); self.frequency.addItem('50 kS/s',50000); self.frequency.addItem('500 kS/s',500000)
         for label,widget in [('モード',self.mode),('掃引パラメータ',self.parameter),('開始値 (V)',self.start),('終了値 (V)',self.stop),('ステップ数',self.steps),('方向',self.direction),('初期待機 (s)',self.initial_delay),('各点の計測時間 (s)',self.period),('点間待機 (s)',self.delay),('サンプリング',self.frequency)]:form.addRow(label,widget)
         form.addRow(self.error_bar)
-        buttons=QHBoxLayout(); self.run_button=QPushButton('開始'); self.stop_button=QPushButton('停止'); self.stop_button.setEnabled(False); buttons.addWidget(self.run_button); buttons.addWidget(self.stop_button); form.addRow(buttons); controls.addWidget(cfg)
-        group=QGroupBox('NCMODE / BDMODE 固定値'); box=QVBoxLayout(group); self.override_table=QTableWidget(0,3); self.override_table.setHorizontalHeaderLabels(['モード','パラメータ','値']); box.addWidget(self.override_table); controls.addWidget(group,1)
+        buttons=QHBoxLayout(); self.run_button=QPushButton('開始'); self.stop_button=QPushButton('停止'); self.stop_button.setEnabled(False); buttons.addWidget(self.run_button); buttons.addWidget(self.stop_button); form.addRow(buttons); controls.addWidget(cfg); controls.addStretch(1)
         plots=QWidget(); pv=QVBoxLayout(plots)
         # 表示／非表示とオフセットはプロットの近くで調整できるようにする。
         channel_group=QGroupBox('プロットするチャンネル'); channel_layout=QVBoxLayout(channel_group)

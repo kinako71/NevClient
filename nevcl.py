@@ -50,7 +50,7 @@ class NevClientWindow(QMainWindow):
         self.parameter_panel=ParameterPanel(); self.set_table=self.parameter_panel.set_table; self.attr_table=self.parameter_panel.attr_table; self.param_table=self.parameter_panel.param_table; self.set_table.cellClicked.connect(self.select_set); split.addWidget(self.parameter_panel)
         self.tabs=QTabWidget(); split.addWidget(self.tabs); split.setSizes([570,880])
         self.sweep_panel=SweepPanel(); self.fig=self.sweep_panel.fig; self.ax=self.sweep_panel.ax; self.canvas=self.sweep_panel.canvas
-        self.sweep_mode=self.sweep_panel.mode; self.sweep_param=self.sweep_panel.parameter; self.sweep_start=self.sweep_panel.start; self.sweep_stop=self.sweep_panel.stop; self.sweep_steps=self.sweep_panel.steps; self.sweep_dir=self.sweep_panel.direction; self.idelay=self.sweep_panel.initial_delay; self.period=self.sweep_panel.period; self.delay=self.sweep_panel.delay; self.frequency=self.sweep_panel.frequency; self.override_table=self.sweep_panel.override_table; self.run_btn=self.sweep_panel.run_button; self.stop_btn=self.sweep_panel.stop_button
+        self.sweep_mode=self.sweep_panel.mode; self.sweep_param=self.sweep_panel.parameter; self.sweep_start=self.sweep_panel.start; self.sweep_stop=self.sweep_panel.stop; self.sweep_steps=self.sweep_panel.steps; self.sweep_dir=self.sweep_panel.direction; self.idelay=self.sweep_panel.initial_delay; self.period=self.sweep_panel.period; self.delay=self.sweep_panel.delay; self.frequency=self.sweep_panel.frequency; self.run_btn=self.sweep_panel.run_button; self.stop_btn=self.sweep_panel.stop_button
         self.error_bar=self.sweep_panel.error_bar; self.run_btn.clicked.connect(self.start_sweep); self.stop_btn.clicked.connect(self.stop_sweep); self.sweep_panel.save_button.clicked.connect(self.save_psa_data); self.sweep_mode.currentTextChanged.connect(self._select_sweep_mode); self.tabs.addTab(self.sweep_panel,'Parameter Sweeper')
         self.scope_panel=ScopePanel(); self.union_combo=self.scope_panel.union; self.scope_table=self.scope_panel.channel_table; self.raw_toggle=self.scope_panel.raw_toggle; self.fig_raw=self.scope_panel.fig; self.ax_raw=self.scope_panel.ax; self.canvas_raw=self.scope_panel.canvas; self.scope_panel.apply_button.clicked.connect(self.apply_scope); self.raw_toggle.toggled.connect(lambda _checked:self._update_plots()); self.tabs.addTab(self.scope_panel,'NI-Scope / Waveform')
         self.device_panel=DevicePanel(); self.device_table=self.device_panel.device_table; self.tabs.addTab(self.device_panel,'DAQmx Devices')
@@ -145,11 +145,10 @@ class NevClientWindow(QMainWindow):
             self.statusBar().showMessage(f'CSV読み込み: {len(self.raw)-1} parameters')
         except Exception as e:self._error(str(e))
     def _render_sets(self):
-        # セット一覧とNCMODE/BDMODEの掃引範囲・固定値を作り直す。
+        # セット一覧とNCMODE/BDMODEの掃引範囲を作り直す。
         self.set_table.setRowCount(len(self.pset_cols))
         for r,c in enumerate(self.pset_cols):self.set_table.setItem(r,0,QTableWidgetItem(self.raw[0][c])); self.set_table.setItem(r,1,QTableWidgetItem(''))
         names=self._labels(); self.sweep_param.clear(); self.sweep_param.addItems(names)
-        self.override_table.setRowCount(0)
         self.scan_configs = {}
         for mode,key in [('NCMODE','NCMODE'),('BDMODE','BDMODE')]:
             col=self.cols.get(key)
@@ -163,8 +162,6 @@ class NevClientWindow(QMainWindow):
                         if len(conf)>=3:
                             self.scan_configs[mode]=(i,conf)
                     except Exception:pass
-                else:
-                    r=self.override_table.rowCount(); self.override_table.insertRow(r); self.override_table.setItem(r,0,QTableWidgetItem(mode)); self.override_table.setItem(r,1,QTableWidgetItem(self._labels()[i] if i<len(self._labels()) else str(i))); self.override_table.setItem(r,2,QTableWidgetItem(val))
         self._select_sweep_mode(self.sweep_mode.currentText())
     def _select_sweep_mode(self,mode):
         # 選択したモードにCSVで定義された掃引対象と範囲を読み込む。
@@ -287,10 +284,13 @@ class NevClientWindow(QMainWindow):
             stop=self.sweep_stop.value() if direction>0 else self.sweep_start.value(); start=self.sweep_start.value() if direction>0 else self.sweep_stop.value()
             self.scope.set_psa(union,[dev.taskType,dev.taskNo,ch],[start,stop,self.sweep_steps.value()],int(self.delay.value()*freq))
             self.daq.set_ch(dev,ch,[start])
-            selected_mode=self.sweep_mode.currentText()
-            for r in range(self.override_table.rowCount()):
-                if self.override_table.item(r,0).text()!=selected_mode:continue
-                ovlabel=self.override_table.item(r,1).text(); val=float(self.override_table.item(r,2).text()); oi=self._labels().index(ovlabel); orow=self.raw[oi+1]; od=self.daq.get_devinfo(orow[self.cols['DEV']],orow[self.cols['CH']].split('-',1)[0]); och=int(orow[self.cols['CH']].split('-',1)[1]); self.daq.set_ch(od,och,[val])
+            # 固定値は画面の一覧に依存せず、CSVの選択中モード列から直接DAQmxへ送る。
+            selected_mode=self.sweep_mode.currentText(); mode_col=self.cols.get(selected_mode)
+            if mode_col is not None:
+                for orow in self.raw[1:]:
+                    val=orow[mode_col] if mode_col<len(orow) else ''
+                    if not val or val.startswith('#'):continue
+                    od=self.daq.get_devinfo(orow[self.cols['DEV']],orow[self.cols['CH']].split('-',1)[0]); och=int(orow[self.cols['CH']].split('-',1)[1]); self.daq.set_ch(od,och,[float(val)])
             self.daq.update(); self.sweep_union=union; self.sweep_label=label; self.sweep_operation=self.sweep_mode.currentText(); self.sweep_bookmark=0; self.sweep_nchan=nchan; self.sweep_freq=freq; self.sweep_channel_info=channel_info; self.sweep_data=[[] for _ in range(nchan)]; self.sweep_param_values=[]
             self.sweep_active=True; self.run_btn.setEnabled(False); self.stop_btn.setEnabled(True)
             QTimer.singleShot(int(self.idelay.value()*1000),self._launch_sweep)
@@ -350,9 +350,9 @@ class NevClientWindow(QMainWindow):
                 low=[(min(seg) if seg else 0)+offset for seg in series]; high=[(max(seg) if seg else 0)+offset for seg in series]
                 x=self.sweep_param_values[:len(series)]; self.ax.plot(x,low,label=f'{name} min',color=color); self.ax.plot(x,high,label=f'{name} max',color=color)
             else:
-                ys=[(sum(seg)/len(seg) if seg else 0)+offset for seg in series]
+                raw_ys=[sum(seg)/len(seg) if seg else 0 for seg in series]; ys=[mean+offset for mean in raw_ys]
                 if self.error_bar.isChecked():
-                    errs=[(sum((v-mean)**2 for v in seg)/len(seg))**.5 if seg else 0 for seg,mean in zip(series,ys)]
+                    errs=[(sum((v-mean)**2 for v in seg)/len(seg))**.5 if seg else 0 for seg,mean in zip(series,raw_ys)]
                     self.ax.errorbar(self.sweep_param_values[:len(ys)],ys,yerr=errs,label=name,color=color,linestyle='solid',capsize=2)
                 else:self.ax.plot(self.sweep_param_values[:len(ys)],ys,label=name,color=color)
         if self.sweep_channel_info:self.ax.legend(loc='best')
@@ -370,18 +370,20 @@ class NevClientWindow(QMainWindow):
     def save_psa_data(self):
         # 掃引データと計測条件・チャンネル情報をCSV形式で保存する。
         if not self.sweep_param_values:return self._error('保存できるPSAデータがありません')
-        path,_=QFileDialog.getSaveFileName(self,'PSAデータ保存','','CSV (*.csv)')
+        path,_=QFileDialog.getSaveFileName(self,'PSAデータ保存','output.csv','CSV (*.csv)')
         if not path:return
+        if Path(path).suffix.lower()!='.csv':path += '.csv'
         headers=['# [parameter]']
         columns=[]
         mode=self.sweep_operation; operation='MIN_MAX' if mode=='BDMODE' else 'MEAN_STDEV'
         for i,series in enumerate(self.sweep_data):
             info=self.sweep_channel_info[i] if i<len(self.sweep_channel_info) else {'active':True,'name':f'CH{i}'}
-            if not info['active']:continue
+            if not info.get('show',info['active']):continue
+            offset=info.get('voffset',0.0)
             if mode=='BDMODE':
-                headers.extend([f'[CH{i} min]',f'[CH{i} max]']); columns.extend([[min(x) if x else 0 for x in series],[max(x) if x else 0 for x in series]])
+                headers.extend([f'[CH{i} min]',f'[CH{i} max]']); columns.extend([[(min(x) if x else 0)+offset for x in series],[(max(x) if x else 0)+offset for x in series]])
             else:
-                headers.extend([f'[CH{i} mean]',f'[CH{i} stdev]']); columns.extend([[sum(x)/len(x) if x else 0 for x in series],[(sum((v-sum(x)/len(x))**2 for v in x)/len(x))**0.5 if x else 0 for x in series]])
+                headers.extend([f'[CH{i} mean]',f'[CH{i} stdev]']); columns.extend([[(sum(x)/len(x) if x else 0)+offset for x in series],[(sum((v-sum(x)/len(x))**2 for v in x)/len(x))**0.5 if x else 0 for x in series]])
         try:
             with open(path,'w',newline='',encoding='utf-8') as f:
                 writer=csv.writer(f); f.write('# psa data (PyQt6 NEV client)\n'); f.write('# '+datetime.now().strftime('%d/%m/%Y %H:%M:%S')+'\n#\n')
@@ -392,13 +394,13 @@ class NevClientWindow(QMainWindow):
                         label=row[self.cols['LABEL']]
                         if label:f.write(f'# {label} : {row[pcol]}\n')
                 f.write('# Data block: '+mode+'\n')
-                f.write(f'# Number of channels: {sum(1 for x in self.sweep_channel_info if x["active"])}, Sampling rate: {self.sweep_freq} (Sps), Data mode: {operation}\n')
+                f.write(f'# Number of channels: {sum(1 for x in self.sweep_channel_info if x.get("show",x["active"]))}, Sampling rate: {self.sweep_freq} (Sps), Data mode: {operation}\n')
                 f.write(f'# Initial delay: {self.idelay.value()} (s), Period per step: {self.period.value()} (s), Delay between steps: {self.delay.value()} (s)\n')
                 f.write('# Sweep parameter: '+self.sweep_label+'\n')
                 for i,info in enumerate(self.sweep_channel_info):
-                    if info['active']:
+                    if info.get('show',info['active']):
                         f.write(f'# CH{i}: {info["name"]}\n')
-                        f.write(f'#   Device: {info["device"].name}, Model: {info["device"].model}, Channel: {info["channel"]}, Coupling: {info["coupling"]}, Input range: {info["range"]} (V)\n')
+                        f.write(f'#   Device: {info["device"].name}, Model: {info["device"].model}, Channel: {info["channel"]}, Coupling: {info["coupling"]}, Input range: {info["range"]} (V), Plot offset: {info.get("voffset",0.0)} (V)\n')
                 writer.writerow(headers)
                 for r,param in enumerate(self.sweep_param_values):writer.writerow([param]+[col[r] if r<len(col) else '' for col in columns])
             self._log('PSA data saved: '+path)
