@@ -15,8 +15,8 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
     QPlainTextEdit, QHeaderView, QCheckBox, QSpinBox, QLineEdit)
 import nevcl_tcp, nevcl_daqmx, nevcl_niscope
 from nevcl_csvif import CsvParameterFile
-from nevcl_param import ATTRS, ParameterPanel, DevicePanel
-from nevcl_psa import SweepPanel, ScopePanel
+from nevcl_param import ATTRS, ParameterPanel
+from nevcl_psa import SweepPanel, PulseStimulusPanel, PRCPanel
 
 ATTRS=list(ATTRS)
 
@@ -36,7 +36,7 @@ class NevClientWindow(QMainWindow):
         # チャンネルごとのプロットオフセットを次回起動時にも読み込めるよう保存する。
         self.plot_offset_settings=QSettings('KohnoLab','NEVClientPyQt')
         self.address=address; self.tcp=None; self.daq=None; self.scope=None; self.csv_model=None; self.csv_path=None; self.raw=[]; self.cols={}; self.pset_cols=[]; self.active_set=None
-        self.sweep_active=False; self.sweep_bookmark=0; self.sweep_dirs=[]; self.psa_data=[]; self.channel_rows=[]; self.scope_channels=[]; self.sweep_channel_info=[]; self.sweep_data=[]; self.sweep_param_values=[]
+        self.sweep_active=False; self.sweep_bookmark=0; self.sweep_dirs=[]; self.psa_data=[]; self.channel_rows=[]; self.scope_channels=[]; self.sweep_channel_info=[]; self.sweep_data=[]; self.sweep_param_values=[]; self.active_stim_target=None
         self._build_ui(); self.timer=QTimer(self); self.timer.setInterval(400); self.timer.timeout.connect(self.poll_sweep)
         self.statusBar().showMessage(f'{address}:9000 | 未接続')
 
@@ -51,11 +51,10 @@ class NevClientWindow(QMainWindow):
         split=QSplitter(Qt.Orientation.Horizontal); outer.addWidget(split,1)
         self.parameter_panel=ParameterPanel(); self.set_table=self.parameter_panel.set_table; self.attr_table=self.parameter_panel.attr_table; self.param_table=self.parameter_panel.param_table; self.set_table.cellClicked.connect(self.select_set); split.addWidget(self.parameter_panel)
         self.tabs=QTabWidget(); split.addWidget(self.tabs); split.setSizes([570,880])
-        self.sweep_panel=SweepPanel(); self.fig=self.sweep_panel.fig; self.ax=self.sweep_panel.ax; self.canvas=self.sweep_panel.canvas
-        self.sweep_mode=self.sweep_panel.mode; self.sweep_param=self.sweep_panel.parameter; self.sweep_start=self.sweep_panel.start; self.sweep_stop=self.sweep_panel.stop; self.sweep_steps=self.sweep_panel.steps; self.sweep_dir=self.sweep_panel.direction; self.idelay=self.sweep_panel.initial_delay; self.period=self.sweep_panel.period; self.delay=self.sweep_panel.delay; self.frequency=self.sweep_panel.frequency; self.run_btn=self.sweep_panel.run_button; self.stop_btn=self.sweep_panel.stop_button
+        self.sweep_panel=SweepPanel(); self.fig=self.sweep_panel.fig; self.ax=self.sweep_panel.ax; self.canvas=self.sweep_panel.canvas; self.sweep_mode=self.sweep_panel.mode; self.sweep_param=self.sweep_panel.parameter; self.sweep_start=self.sweep_panel.start; self.sweep_stop=self.sweep_panel.stop; self.sweep_steps=self.sweep_panel.steps; self.sweep_dir=self.sweep_panel.direction; self.idelay=self.sweep_panel.initial_delay; self.period=self.sweep_panel.period; self.delay=self.sweep_panel.delay; self.frequency=self.sweep_panel.frequency; self.run_btn=self.sweep_panel.run_button; self.stop_btn=self.sweep_panel.stop_button; self.union_combo=self.sweep_panel.union; self.channel_plot_table=self.sweep_panel.channel_plot_table
         self.error_bar=self.sweep_panel.error_bar; self.run_btn.clicked.connect(self.start_sweep); self.stop_btn.clicked.connect(self.stop_sweep); self.sweep_panel.save_button.clicked.connect(self.save_psa_data); self.sweep_panel.save_image_button.clicked.connect(self.save_psa_plot_image); self.sweep_mode.currentTextChanged.connect(self._select_sweep_mode); self.tabs.addTab(self.sweep_panel,'Parameter Sweeper')
-        self.scope_panel=ScopePanel(); self.union_combo=self.scope_panel.union; self.scope_table=self.scope_panel.channel_table; self.raw_toggle=self.scope_panel.raw_toggle; self.fig_raw=self.scope_panel.fig; self.ax_raw=self.scope_panel.ax; self.canvas_raw=self.scope_panel.canvas; self.scope_panel.apply_button.clicked.connect(self.apply_scope); self.raw_toggle.toggled.connect(lambda _checked:self._update_plots()); self.tabs.addTab(self.scope_panel,'NI-Scope / Waveform')
-        self.device_panel=DevicePanel(); self.device_table=self.device_panel.device_table; self.tabs.addTab(self.device_panel,'DAQmx Devices')
+        self.pulse_panel=PulseStimulusPanel(); self.pulse_panel.fire_button.clicked.connect(self.fire_pulse_stimulus); self.pulse_panel.save_button.clicked.connect(self.save_psa_data); self.pulse_panel.save_image_button.clicked.connect(self.save_psa_plot_image); self.tabs.addTab(self.pulse_panel,'Pulse Stimulus')
+        self.prc_panel=PRCPanel(); self.tabs.addTab(self.prc_panel,'PRC')
         self.log=QPlainTextEdit(); self.log.setReadOnly(True); self.tabs.addTab(self.log,'通信ログ')
 
     def _start_job(self,fn,callback):
@@ -79,64 +78,30 @@ class NevClientWindow(QMainWindow):
         def done(res,err):
             self.run_btn.setEnabled(True)
             if err:self.statusBar().showMessage('接続に失敗しました'); self._error(str(err)); return
-            self.statusBar().showMessage(self.address+' に接続しました'); self._log(res); self._refresh_devices(); self._refresh_scope_channels()
+            self.statusBar().showMessage(self.address+' に接続しました'); self._log(res); self._refresh_devices(); self.pulse_panel.set_outputs(self.daq.daos); self._refresh_scope_channels()
         self._start_job(connect,done)
 
     def _refresh_devices(self):
         # DAQmx機器一覧と、選択可能なNI-Scope unionを画面に反映する。
         if not self.daq:return
-        devs=[]
-        for typ,seq in [('SAO',self.daq.saos),('DAO',self.daq.daos),('SDO',self.daq.sdos),('DDO',self.daq.ddos)]:
-            for d in seq:devs.append([typ,d.id,d.name,d.model,d.N_data,d.L_data,d.freq,d.state])
-        self.device_table.setRowCount(len(devs))
-        for r,row in enumerate(devs):
-            for c,val in enumerate(row):self.device_table.setItem(r,c,QTableWidgetItem(str(val)))
         self.union_combo.clear()
         if self.scope:
             for i in range(self.scope.N_unions):self.union_combo.addItem(f'Union {i}',i)
 
     def _refresh_scope_channels(self):
-        # 接続済みNI-Scope機器の全チャンネルを設定表へ並べる。
+        # NI-Scopeの全チャンネルを掃引タブの計測／表示一覧へ並べる。
         if not self.scope:return
         self.scope_channels=[]
         for di,d in enumerate(self.scope.device_list):
             for ch in range(d.N_channels):self.scope_channels.append((di,d,ch))
-        self.scope_table.setRowCount(len(self.scope_channels))
+        plot_table=self.channel_plot_table; plot_table.setRowCount(len(self.scope_channels))
         for r,(di,d,ch) in enumerate(self.scope_channels):
-            active=QCheckBox(); active.setChecked(True); self.scope_table.setCellWidget(r,0,active)
-            values=[d.name,str(ch),f'{d.name}/CH{ch}','2']
-            for c,val in enumerate(values,1):self.scope_table.setItem(r,c,QTableWidgetItem(val))
-            # NI-Scope側は取得に使うレンジと結合だけを設定する。
-            combo=QComboBox(); combo.addItems(['DC','AC','GND']); combo.setCurrentText('DC'); self.scope_table.setCellWidget(r,5,combo)
-        plot_table=self.sweep_panel.channel_plot_table; plot_table.setRowCount(len(self.scope_channels))
-        for r,(di,d,ch) in enumerate(self.scope_channels):
-            show=QCheckBox(); show.setChecked(True); show.toggled.connect(self._plot_channel_settings_changed); plot_table.setCellWidget(r,0,show)
-            plot_table.setItem(r,1,QTableWidgetItem(f'{d.name}/CH{ch}'))
+            active=QCheckBox(); active.setChecked(True); plot_table.setCellWidget(r,0,active)
+            show=QCheckBox(); show.setChecked(True); show.toggled.connect(self._plot_channel_settings_changed); plot_table.setCellWidget(r,1,show)
+            plot_table.setItem(r,2,QTableWidgetItem(f'{d.name}/CH{ch}'))
             offset=QDoubleSpinBox(); offset.setRange(-10,10); offset.setSingleStep(.0001); offset.setDecimals(4)
             offset_key=f'plot_offsets/{d.name}/CH{ch}'; offset.setValue(self.plot_offset_settings.value(offset_key,0.0,type=float))
-            offset.valueChanged.connect(lambda value,key=offset_key:self.plot_offset_settings.setValue(key,value)); offset.valueChanged.connect(self._plot_channel_settings_changed); plot_table.setCellWidget(r,2,offset)
-
-    def apply_scope(self):
-        # チャンネル表の有効状態・レンジ・結合をサーバー側unionへ送る。
-        if not self.scope:return self._error('先にサーバーへ接続してください')
-        union=self.union_combo.currentData()
-        if union is None:return self._error('利用可能なunionがありません')
-        devs=[]; chconfs=[]
-        for r,(di,d,ch) in enumerate(self.scope_channels):
-            if self.scope_table.cellWidget(r,0).isChecked() and di not in devs:devs.append(di)
-        if not devs:return self._error('1つ以上のNI-Scope機器を選択してください')
-        try:
-            self.scope.set_union_devlist(union,devs)
-            for di in devs:
-                conf=[]
-                for r,(didx,d,ch) in enumerate(self.scope_channels):
-                    if didx!=di:continue
-                    if self.scope_table.cellWidget(r,0).isChecked():
-                        conf.append([float(self.scope_table.item(r,4).text()),self.scope_table.cellWidget(r,5).currentText()])
-                    else:conf.append(['*','*'])
-                self.scope.set_union_channelConf(union,di,0,conf)
-            self._log(f'Union {union}: devices {devs}, channel config applied')
-        except Exception as e:self._error(str(e))
+            offset.valueChanged.connect(lambda value,key=offset_key:self.plot_offset_settings.setValue(key,value)); offset.valueChanged.connect(self._plot_channel_settings_changed); plot_table.setCellWidget(r,3,offset)
 
     def open_csv(self):
         # CSVを検証し、属性・パラメータセット・モード設定を各画面へ反映する。
@@ -268,7 +233,7 @@ class NevClientWindow(QMainWindow):
             dirs=[[1],[-1],[1,-1],[-1,1]][self.sweep_dir.currentIndex()]; self.sweep_dirs=dirs[1:]; direction=dirs[0]
             scope_devs=[]
             for r,(di,d,c) in enumerate(self.scope_channels):
-                if self.scope_table.cellWidget(r,0).isChecked() and di not in scope_devs:scope_devs.append(di)
+                if self.channel_plot_table.cellWidget(r,0).isChecked() and di not in scope_devs:scope_devs.append(di)
             if not scope_devs:raise ValueError('NI-Scope channelを1つ以上有効にしてください')
             self.scope.set_union_devlist(union,scope_devs)
             nchan=0
@@ -277,10 +242,10 @@ class NevClientWindow(QMainWindow):
                 devscope=self.scope.device_list[di]; conf=[]
                 for r,(didx,d,c) in enumerate(self.scope_channels):
                     if didx!=di:continue
-                    active=self.scope_table.cellWidget(r,0).isChecked()
-                    if active:conf.append([float(self.scope_table.item(r,4).text()),self.scope_table.cellWidget(r,5).currentText()])
+                    active=self.channel_plot_table.cellWidget(r,0).isChecked()
+                    if active:conf.append([2,'DC'])
                     else:conf.append(['*','*'])
-                    channel_info.append({'name':self.scope_table.item(r,3).text(),'active':active,'show':self.sweep_panel.channel_plot_table.cellWidget(r,0).isChecked(),'voffset':self.sweep_panel.channel_plot_table.cellWidget(r,2).value(),'table_row':r,'device':d,'channel':c,'range':self.scope_table.item(r,4).text(),'coupling':self.scope_table.cellWidget(r,5).currentText()})
+                    channel_info.append({'name':f'{d.name}/CH{c}','active':active,'show':self.channel_plot_table.cellWidget(r,1).isChecked(),'voffset':self.channel_plot_table.cellWidget(r,3).value(),'table_row':r,'device':d,'channel':c,'range':'2','coupling':'DC'})
                 self.scope.set_union_channelConf(union,di,0,conf)
                 nchan+=devscope.N_channels
             freq=self.frequency.currentData(); dlen=int((self.period.value()+self.delay.value())*freq)
@@ -335,14 +300,14 @@ class NevClientWindow(QMainWindow):
         # 表での表示切替・オフセット変更を既存データへ即時反映する。
         for info in self.sweep_channel_info:
             r=info.get('table_row')
-            if r is None or r>=self.scope_table.rowCount():continue
-            info['show']=self.sweep_panel.channel_plot_table.cellWidget(r,0).isChecked()
-            info['voffset']=self.sweep_panel.channel_plot_table.cellWidget(r,2).value()
+            if r is None or r>=self.channel_plot_table.rowCount():continue
+            info['show']=self.channel_plot_table.cellWidget(r,1).isChecked()
+            info['voffset']=self.channel_plot_table.cellWidget(r,3).value()
         if self.sweep_data and hasattr(self,'sweep_label'):
             self._update_plots()
 
     def _update_plots(self):
-        # 取り込んだデータから掃引グラフと最新波形を再描画する。
+        # 取り込んだデータから掃引結果グラフを再描画する。
         self.ax.clear(); self.ax.set_box_aspect(1); self.ax.grid(True)
         colors=['#ff0000','#0000ff','#00aa00','#ff00ff','#cc9900','#00aaaa','#883355','#335588']
         for i,series in enumerate(self.sweep_data):
@@ -361,15 +326,39 @@ class NevClientWindow(QMainWindow):
                 else:self.ax.plot(self.sweep_param_values[:len(ys)],ys,label=name,color=color)
         if self.sweep_channel_info:self.ax.legend(loc='best')
         self.ax.set_xlabel(self.sweep_label); self.ax.set_ylabel('Voltage (V)'); self.canvas.draw()
-        if self.raw_toggle.isChecked():
-            self.ax_raw.clear(); self.ax_raw.grid(True)
-            for i,series in enumerate(self.sweep_data):
-                if series:
-                    info=self.sweep_channel_info[i] if i<len(self.sweep_channel_info) else {'active':True,'name':f'CH{i}'}
-                    if info['active']:
-                        seg=series[-1]; self.ax_raw.plot([x/self.sweep_freq for x in range(len(seg))],seg,label=info['name'])
-            if self.sweep_channel_info:self.ax_raw.legend(loc='best')
-            self.ax_raw.set_xlabel('Time (s)'); self.ax_raw.set_ylabel('Voltage (V)'); self.canvas_raw.draw()
+        # Pulse Stimulusタブにも同じPSA結果を表示し、刺激波形と並べて確認できるようにする。
+        pulse_ax=self.pulse_panel.ax; pulse_ax.clear(); pulse_ax.set_box_aspect(1); pulse_ax.grid(True)
+        for i,series in enumerate(self.sweep_data):
+            info=self.sweep_channel_info[i] if i<len(self.sweep_channel_info) else {'active':True,'name':f'CH{i}'}
+            if not info.get('show',info['active']):continue
+            color=colors[i%len(colors)]; offset=info.get('voffset',0.0)
+            if self.sweep_operation=='BDMODE':
+                pulse_ax.plot(self.sweep_param_values[:len(series)],[(min(seg) if seg else 0)+offset for seg in series],label=f'{info["name"]} min',color=color)
+                pulse_ax.plot(self.sweep_param_values[:len(series)],[(max(seg) if seg else 0)+offset for seg in series],label=f'{info["name"]} max',color=color)
+            else:
+                ys=[(sum(seg)/len(seg) if seg else 0)+offset for seg in series]
+                pulse_ax.plot(self.sweep_param_values[:len(ys)],ys,label=info['name'],color=color)
+        if self.sweep_channel_info:pulse_ax.legend(loc='best')
+        pulse_ax.set_xlabel(self.sweep_label); pulse_ax.set_ylabel('Voltage (V)'); self.pulse_panel.canvas.draw_idle()
+
+    def fire_pulse_stimulus(self):
+        """Pulse Stimulusタブで設定した波形を選択中のDAQmx出力へ送る。"""
+        if not self.daq:return self._error('先にDAQmx機器へ接続してください')
+        selected=self.pulse_panel.output.currentData()
+        if not selected:return self._error('出力チャンネルがありません')
+        dev,ch=selected
+        try:
+            if self.active_stim_target and self.active_stim_target!=(dev,ch):
+                old_dev,old_ch=self.active_stim_target; old_dev.set_stim(old_ch,[0]); self.daq.set_dao_data(old_dev,0,-1,True); self.daq.run_dao(old_dev)
+            dt_ms=self.pulse_panel.dt.value(); duration_ms=self.pulse_panel.duration.value(); n=max(2,int(duration_ms/dt_ms)+1)
+            dev.L_data=n; dev.freq=1000.0/dt_ms
+            if self.daq.set_dao_cfg(dev) is None:raise RuntimeError('DAQmx波形設定に失敗しました')
+            for channel in range(dev.N_data):dev.set_stim(channel,[0.0]*n)
+            dev.set_stim(ch,[value/1000.0 for value in self.pulse_panel.waveform])
+            if self.daq.set_dao_data(dev,0,-1,True) is None:raise RuntimeError('DAQmx波形データ送信に失敗しました')
+            if self.daq.run_dao(dev) is None:raise RuntimeError('DAQmx波形出力に失敗しました')
+            self.active_stim_target=(dev,ch); self._log(f'Pulse stimulus output: {dev.name}/AO-{ch}, {n} samples at {dev.freq:g} S/s')
+        except Exception as e:self._error(str(e))
 
     def save_psa_data(self):
         # 掃引データと計測条件・チャンネル情報をCSV形式で保存する。
