@@ -78,18 +78,12 @@ class NevClientWindow(QMainWindow):
         def done(res,err):
             self.run_btn.setEnabled(True)
             if err:self.statusBar().showMessage('接続に失敗しました'); self._error(str(err)); return
-            self.statusBar().showMessage(self.address+' に接続しました'); self._log(res); self._refresh_devices(); self.pulse_panel.set_outputs(self.daq.daos); self._refresh_scope_channels()
+            self.statusBar().showMessage(self.address+' に接続しました'); self._log(res); self._refresh_devices(); self.pulse_panel.set_outputs(self.daq.aos); self._refresh_scope_channels()
         self._start_job(connect,done)
 
     def _refresh_devices(self):
-        # DAQmx機器一覧と、選択可能なNI-Scope unionを画面に反映する。
+        # PRCタブへの置き換え後は、一覧表を触らずPSA unionだけを更新する。
         if not self.daq:return
-        devs=[]
-        for typ,seq in [('AO',self.daq.aos),('AI',self.daq.ais),('DO',self.daq.dos),('DI',self.daq.dis)]:
-            for d in seq:devs.append([typ,d.id,d.name,d.model,d.N_data,d.L_data,d.freq,d.state])
-        self.device_table.setRowCount(len(devs))
-        for r,row in enumerate(devs):
-            for c,val in enumerate(row):self.device_table.setItem(r,c,QTableWidgetItem(str(val)))
         self.union_combo.clear()
         if self.scope:
             for i in range(self.scope.N_unions):self.union_combo.addItem(f'Union {i}',i)
