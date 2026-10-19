@@ -34,10 +34,6 @@ class nevcl_sysDAQmx():
     tcpcon = None
 
     ## [ device lists ]
-    saos = []      # list of dev_info (nevcl_devDAQmx) for SAO
-    daos = []      # list of dev_info (nevcl_devDAQmx) for DAO
-    sdos = []      # list of dev_info (nevcl_devDAQmx) for SDO
-    ddos = []      # list of dev_info (nevcl_devDAQmx) for DDO
     dev_dict = {}  # dictionary from device name to [ static/dynamic, device model ]
 
     ## [ variables ]
@@ -49,54 +45,54 @@ class nevcl_sysDAQmx():
         self.init()
 
     def init(self):
-        # GET DAQMXINFOを送り、SAO/DAO/SDO/DDOの機器情報を作る。
-        """
-        (re-)initialize DAQmx subsystem
-        - get list of installed devices in nev_server by GET DAQMXINFO
-        - register the devices to self.saos,daos,sdos
-        - create a dictionary(self.dev_dict)
-          from device name(string) to [ static/dynamic, device model ]
-        - clear self.update_list (a set)
-
-        Return value:
-        - None : tcp connection has been killed unexpectedly
-        - response from self.tcpcon.recv() : unexpected tag
-        - []   : success
-        """
-        ## [ put query to nev_server ]
+        """GET DAQMXINFOを解析し、AO/AI/DO/DIの機器情報を登録する。"""
         self.tcpcon.send("GET DAQMXINFO")
         res = self.tcpcon.recv()
-        if res is None:  # disconnected
+        if res is None:
             nevcl_sys.logger.log("disconnected from server", 2)
             return None
-        if res[0] != "#DAQMXINFO": # unexpected response
+        if not res or res[0] != "#DAQMXINFO":
             nevcl_sys.logger.log("unexpected response from server", 2)
             return res
-        ## [ analyze daqmxinfo and register to self.saos,daos,sdos (uses self._analyze_inf()) ]
-        self.saos = []
-        self.daos = []
-        self.sdos = []
-        self.dev_dict = {}   # dev name -> [ 'static'/'dynamic', device model name ]
-        for inf in res[1:]:  # ASSUMING THAT nev_server GIVES EACH TAG ONLY ONCE
+
+        self.aos = []
+        self.ais = []
+        self.dos = []
+        self.dis = []
+        self.dev_dict = {}
+
+        tag_to_list = {
+            "AO": self.aos,
+            "AI": self.ais,
+            "DO": self.dos,
+            "DI": self.dis,
+        }
+
+        for inf in res[1:]:
             tag, dl = self._analyze_inf(inf)
-            if tag == "SAO":
-                for idx, dev in enumerate(dl):
-                    nd = nevcl_devDAQmx(dev, [True, True, tag, idx])
-                    self.saos.append(nd)
-                    self.dev_dict[nd.name] = [ 'static', nd.model ]
+            if tag not in tag_to_list:
                 continue
-            if tag == "DAO":
-                for idx, dev in enumerate(dl):
-                    nd = nevcl_devDAQmx(dev, [False, True, tag, idx])
-                    self.daos.append(nd)
-                    self.dev_dict[nd.name] = [ 'dynamic', nd.model ]
-                continue
-            if tag == "SDO":
-                for idx, dev in enumerate(dl):
-                    nd = nevcl_devDAQmx(dev, [True, False, tag, idx])
-                    self.sdos.append(nd)
-                    self.dev_dict[nd.name] = [ 'static', nd.model ]
-                continue
+
+            for idx, dev in enumerate(dl):
+                # L_data / freqで静的・動的タスクを判定する。
+                # 例: AO(...,1024,100000,...) は波形出力、DO(...,1,0,...) は静的出力。
+                try:
+                    l_data = int(dev[4])
+                    freq = float(dev[5])
+                except (ValueError, IndexError):
+                    l_data, freq = 1, 0.0
+                is_static = (l_data <= 1 or freq <= 0.0)
+                is_analog = tag in ("AO", "AI")
+
+                nd = nevcl_devDAQmx(
+                    dev, [is_static, is_analog, tag, idx]
+                )
+                tag_to_list[tag].append(nd)
+                self.dev_dict[nd.name] = [
+                    "static" if is_static else "dynamic", nd.model
+                ]
+
+
         self.update_list = set()
         return []
 
@@ -123,28 +119,23 @@ class nevcl_sysDAQmx():
         return tag, dev_list
 
     def get_devinfo(self, dev_name, ioType):
-        # 機器名とAO/DO種別から、対象のDAQmx機器オブジェクトを探す。
-        """
-        - get the nevcl_devDAQmx that corresponds to the given device name and "AO"/"DO"
-        """
-        ## [ find a list of devices ]
-        dev_type = self.dev_dict[dev_name]  # ["dynamic" or "static", model number ]
-        if ioType == "AO":  # analog output
-            if dev_type[0] == "dynamic":  # dynamic device
-                dev_list = self.daos
-            else:
-                dev_list = self.saos
-        elif ioType == "DO":  # digital output
-            if dev_type[0] == "dynamic":  # dynamic device
-                dev_list = self.ddos
-            else:
-                dev_list = self.sdos
+        """機器名とAO/DO種別から、出力機器オブジェクトを返す。"""
+        ioType = ioType.upper()
+        if ioType == "AO":
+            dev_list = self.aos
+        elif ioType == "DO":
+            dev_list = self.dos
+        elif ioType == "AI":
+            dev_list = self.ais
+        elif ioType == "DI":
+            dev_list = self.dis
         else:
-            dev_list = []
-        ## [ find the devinfo ]
+            return None
+
         for dev in dev_list:
             if dev.name == dev_name:
                 return dev
+        return None
 
     def set_ch(self, dev_info, ch, val):
         # 出力値を機器オブジェクトに記録する。送信はupdate()で行う。
@@ -188,10 +179,10 @@ class nevcl_sysDAQmx():
                 continue
             else:  # dynamic devices
                 # update the data for all the channels
-                if self.set_dao_data(dev_info, 0, -1, False) == None:
+                if self.set_ao_data(dev_info, 0, -1, False) == None:
                     continue
-                # issue RUN DAO command
-                if self.run_dao(dev_info) == None:
+                # issue RUN AO command
+                if self.run_ao(dev_info) == None:
                     continue
                 # remove dev_info from self.update_list
                 self.update_list.remove(dev_info)
@@ -199,18 +190,18 @@ class nevcl_sysDAQmx():
         print("# nevcl_sysDAQmx.update() complete")
         return "OK"
 
-    def set_dao_data(self,
+    def set_ao_data(self,
                      dev_info: "target device's nevcl_devDAQmx",
                      ch_start: "index of the first channel",
                      ch_end  : "index of the last channel (-1 for the device's last channel)",
                      stim    : "set True to activate nevcl_devDAQmx.stim"):
         """
-        send SET DAO command to a dynamic analog task
+        send SET AO command to a dynamic analog task
         - Data is set only for a range of channels whose index is from ch_start to ch_end.
           To specify all the channels in the device, set ch_start = 0, ch_end = -1.
         """
-        print("# set_dao_data()")
-        ## [ send SET DAO command ]
+        print("# set_ao_data()")
+        ## [ send SET AO command ]
         comstr = "SET " + dev_info.taskType + " " + str(dev_info.taskNo) + " " + str(ch_start)
         print("  sending:", comstr)
         self.tcpcon.send(comstr)
@@ -218,7 +209,7 @@ class nevcl_sysDAQmx():
         print("  response:", res)
         if res is None:  # disconnected
             return None
-        if res[0] != "#SETDAO " + str(dev_info.taskNo): # unexpected response
+        if res[0] != "#SET" + dev_info.taskType + " " + str(dev_info.taskNo): # unexpected response
             print("! unexpected response")
             return None
         ## [ calculate the last channel's index + 1 ]
@@ -260,12 +251,12 @@ class nevcl_sysDAQmx():
         dev_info.stim_active = stim
         return res
         
-    def run_dao(self, dev_info):
+    def run_ao(self, dev_info):
         """ 
-        send RUN DAO command to the nev_server
-        - returns response of the RUN DAO command
+        send RUN AO command to the nev_server
+        - returns response of the RUN AO command
         """
-        self.tcpcon.send("RUN DAO " + str(dev_info.taskNo))
+        self.tcpcon.send("RUN " + dev_info.taskType + " " + str(dev_info.taskNo))
         res = self.tcpcon.recv()
         if res is None:  # disconnected
             return None
@@ -274,22 +265,22 @@ class nevcl_sysDAQmx():
             return None
         return res
 
-    def set_dao_cfg(self, *args):
+    def set_ao_cfg(self, *args):
         """
-        send SET DAO DLEN and SET DAO FREQ commands to the nev_server
+        send SET AO DLEN and SET AO FREQ commands to the nev_server
         - arguments: dev_infos
           if arguments are not given, all the devices are configured
-          with the parameter for the FIRST DEVICE in the DAO device list
+          with the parameter for the FIRST DEVICE in the AO device list
         """
         if len(args) == 0:
-            cmnd_parsets = [ [ '*', str(self.daos[0].L_data), str(self.daos[0].freq) ] ]
+            cmnd_parsets = [ [ '*', str(self.aos[0].L_data), str(self.aos[0].freq) ] ]
         else:
             cmnd_parsets = [ [ str(dev_info.taskNo), str(dev_info.L_data), str(dev_info.freq) ]
                           for dev_info in args ]
 
         for cmnd_parset in cmnd_parsets:
-            cmnd_set = [ "SET DAO DLEN " + cmnd_parset[0] + " " + cmnd_parset[1],
-                         "SET DAO FREQ " + cmnd_parset[0] + " " + cmnd_parset[2] ]
+            cmnd_set = [ "SET AO DLEN " + cmnd_parset[0] + " " + cmnd_parset[1],
+                         "SET AO FREQ " + cmnd_parset[0] + " " + cmnd_parset[2] ]
             for cmnd in cmnd_set:
                 self.tcpcon.send(cmnd)
                 res = self.tcpcon.recv()
@@ -316,9 +307,16 @@ class nevcl_sysDAQmx():
         return res
 
     def print_devinfo(self, dev_name):
-        if dev_name not in self.dev_dict:
-            return None
-        dev_info = self.dev_dict[dev_name]
+        if isinstance(dev_name, nevcl_devDAQmx):
+            dev_info = dev_name
+        else:
+            if dev_name not in self.dev_dict:
+                return None
+            dev_info = self.get_devinfo(dev_name, "AO") or self.get_devinfo(dev_name, "DO")
+            if dev_info is None:
+                dev_info = self.get_devinfo(dev_name, "AI") or self.get_devinfo(dev_name, "DI")
+            if dev_info is None:
+                return None
         print("id    :", dev_info.id)
         print("name  :", dev_info.name)
         print("model :", dev_info.model)
@@ -338,82 +336,51 @@ class nevcl_sysDAQmx():
 
 class nevcl_sysDAQmx_dummy():
     """実機通信を行わない開発・画面確認用のDAQmx代替実装。"""
-    """
-    dummy for stand-alone mode / debugging
-    """
-    ## [ tcp connection ]
-    tcpcon = None
-
-    ## [ list of devices ]
-    saos = []
-    daos = []
-    sdos = []
-    ddos = []
-    dev_dict = {}  # dictionary from devince name to [ static/dynamic, device model ]
-
-    ## [ variables ]
-    auto_update = False  # auto update mode(self.update() is invoked when set functions are executed)
-    update_list = {}     # set of task names to be updated
 
     def __init__(self):
         self.tcpcon = "stand_alone"
+        self.auto_update = False
+        self.update_list = set()
         self.init()
 
     def init(self):
-        """
-        (re-)initialize DAQmx subsystem
-        - get list of installed devices in nev_server by GET DAQMXINFO
-        - register the devices to self.saos,daos,sdos
-        - create a dictionary(self.dev_dict)
-          from device name(string) to [ static/dynamic, device model ]
-        - clear self.update_list (a set)
-
-        Return value:
-        - None : tcp connection has been killed unexpectedly
-        - response from self.tcpcon.recv() : unexpected tag
-        - []   : success
-        """
-        ## [ register dummy devices ]
-        self.dev_dict = {}   # dev name -> [ 'static'/'dynamic', device model name ]
-        self.saos = [ nevcl_devDAQmx(["2", "DACS0", "PXI-6704", 16, 1, 0.0, 0],
-                                     [True, True, "SAO", 0]),
-                      nevcl_devDAQmx(["3", "DACS1", "PXI-6704", 16, 1, 0.0, 0],
-                                     [True, True, "SAO", 1]) ]
-        self.dev_dict["DACS0"] = [ 'static', "PXI-6704" ]
-        self.dev_dict["DACS1"] = [ 'static', "PXI-6704" ]
-        self.daos = [ nevcl_devDAQmx(["0", "DACD0", "PXI-6733", 8, 1024, 100000.0, 0],
-                                     [False, True, "DAO", 0]),
-                      nevcl_devDAQmx(["1", "DACD1", "PXI-6733", 8, 1024, 100000.0, 0],
-                                     [False, True, "DAO", 0]) ]
-        self.dev_dict["DACD0"] = [ 'dynamic', "PXI-6733" ]
-        self.dev_dict["DACD1"] = [ 'dynamic', "PXI-6733" ]
-        self.sdos = [ nevcl_devDAQmx(["2", "DACS0", "PXI-6704", 8, 1, 0.0, 0],
-                                     [True, False, "SDO", 0]),
-                      nevcl_devDAQmx(["3", "DACS1", "PXI-6704", 8, 1, 0.0, 0],
-                                     [True, False, "SDO", 0]) ]
-        self.ddos = []
+        self.aos = [
+            nevcl_devDAQmx(["0", "PXI1Slot2", "PXIe-6739", 64, 1024, 100000.0, 1],
+                           [False, True, "AO", 0]),
+            nevcl_devDAQmx(["1", "PXI1Slot3", "PXIe-6739", 64, 1024, 100000.0, 1],
+                           [False, True, "AO", 1]),
+        ]
+        self.ais = [
+            nevcl_devDAQmx(["0", "PXI1Slot4", "PXIe-4481", 6, 1, 0.0, 0],
+                           [True, True, "AI", 0]),
+            nevcl_devDAQmx(["1", "PXI1Slot5", "PXIe-4481", 6, 1, 0.0, 0],
+                           [True, True, "AI", 1]),
+        ]
+        self.dos = [
+            nevcl_devDAQmx(["0", "PXI1Slot2", "PXIe-6739", 20, 1, 0.0, 0],
+                           [True, False, "DO", 0]),
+            nevcl_devDAQmx(["1", "PXI1Slot3", "PXIe-6739", 20, 1, 0.0, 0],
+                           [True, False, "DO", 1]),
+        ]
+        self.dis = [
+            nevcl_devDAQmx(["0", "PXI1Slot2", "PXIe-6739", 20, 1, 0.0, 0],
+                           [True, False, "DI", 0]),
+            nevcl_devDAQmx(["1", "PXI1Slot3", "PXIe-6739", 20, 1, 0.0, 0],
+                           [True, False, "DI", 1]),
+        ]
+        self.dev_dict = {}
+        for group in (self.aos, self.ais, self.dos, self.dis):
+            for dev in group:
+                self.dev_dict[dev.name] = ["static" if dev.static else "dynamic", dev.model]
         self.update_list = set()
         return []
 
     def get_devinfo(self, dev_name, ioType):
-        ## [ find a list of devices ]
-        dev_type = self.dev_dict[dev_name]  # ["dynamic" or "static", model number ]
-        if ioType == "AO":  # analog output
-            if dev_type[0] == "dynamic":  # dynamic device
-                dev_list = self.daos
-            else:
-                dev_list = self.saos
-        elif ioType == "DO":  # digital output
-            if dev_type[0] == "dynamic":  # dynamic device
-                dev_list = self.ddos
-            else:
-                dev_list = self.sdos
-        else:
-            dev_list = []
-        ## [ find the devinfo ]
-        for dev in dev_list:
+        groups = {"AO": self.aos, "AI": self.ais, "DO": self.dos, "DI": self.dis}
+        for dev in groups.get(ioType.upper(), []):
             if dev.name == dev_name:
                 return dev
+        return None
 
     def set_ch(self, dev_info, ch, val):
         res = dev_info.set_ch(ch, val)
@@ -421,99 +388,31 @@ class nevcl_sysDAQmx_dummy():
             self.update_list.add(dev_info)
         if self.auto_update:
             self.update()
+        return res
 
     def update(self, *args):
-        """ send SET command to the nev_server and update the output voltages
-            - args[0] : list of dev_infos to be updated
-            - dev_infos in self.update_list are updated if args[0] is empty
-            - returns "OK" if success  ## This should be refined
-        """
-        ## [ update devices in self.update_list if no argument is given ]
-        print("# nevcl_sysDAQmx.update()")
-        if len(args) > 0:
-            dev_infos = list(set(args[0]))
-        else:
-            dev_infos = list(self.update_list)
-        print("  updating", len(dev_infos), "devices")
-        ## [ send commands to nev_server ]
+        dev_infos = list(set(args[0])) if args else list(self.update_list)
         for dev_info in dev_infos:
-            self.print_devinfo(dev_info)
-            comstr = "SET " + dev_info.taskType + " " + str(dev_info.taskNo)
-            if dev_info.static:  # static devices
-                for val in dev_info.data:
-                    comstr += " " + str(val[0])
-                print("  sending:", comstr)
-                print("  assuming normal response in this dummy module.")
-                #self.tcpcon.send(comstr)
-                #res = self.tcpcon.recv()
-                #print("  response:", res)
-                #if res is None:  # disconnected
-                #    return None
-                #if res[0] != "": # unexpected response
-                #    print("! unexpected response")
-                #    return None
-                self.update_list.remove(dev_info)
+            if dev_info.taskType not in ("AO", "DO"):
+                print("  skipping input device:", dev_info.name)
                 continue
-            else:  # dynamic devices
-                comstr += " 0"
-                print("  sending:", comstr)
-                print("  assuming normal response in this dummy module.")
-                #self.tcpcon.send(comstr)
-                #res = self.tcpcon.recv()
-                #print("  response:", res)
-                #if res is None:  # disconnected
-                #    return None
-                #if res[0] != "#SETDAO " + str(dev_info.taskNo): # unexpected response
-                #    print("! unexpected response")
-                #    return None
-                #datstr = ""
-                #for val in dev_info.data:
-                #    if len(val) > 1:
-                #        datstr += str(val) + " "
-                #    else:
-                #        datstr += str(val[0]) + " "
-                #datstr += "#OK\n"
-                #print("  sending:", datstr)
-                #self.tcpcon.send(datstr)
-                #res = self.tcpcon.recv()
-                #print("  response:", res)
-                #if res is None: # disconnected
-                #    return None
-                #if res[0] != "":  # unexpected response
-                #    print("! unexpected response")
-                #    return None
-                print("  sending: RUN DAO " + str(dev_info.taskNo))
-                print("  assuming normal response in this dummy module.")
-                #self.tcpcon.send("RUN DAO " + str(dev_info.taskNo))
-                #res = self.tcpcon.recv()
-                #if res is None: # disconnected
-                #    return None
-                #if res[0] != "":  # unexpected response
-                #    print("! unexpected response")
-                #    return None
-                self.update_list.remove(dev_info)
-                continue
-        print("# nevcl_sysDAQmx.update() complete")
+            command = "SET " + dev_info.taskType + " " + str(dev_info.taskNo)
+            command += " " + " ".join(str(values[0]) for values in dev_info.data)
+            print("  simulated sending:", command)
+            if not dev_info.static:
+                print("  simulated sending: RUN " + dev_info.taskType + " " + str(dev_info.taskNo))
+            self.update_list.discard(dev_info)
         return "OK"
-        
-    def print_devinfo(self, dev_name):
-        if dev_name not in self.dev_dict:
-            return None
-        dev_info = self.dev_dict[dev_name]
-        print("id    :", dev_info.id)
-        print("name  :", dev_info.name)
-        print("model :", dev_info.model)
-        print("N_data:", dev_info.N_data)
-        print("L_data:", dev_info.L_data)
-        print("freq  :", dev_info.freq)
-        print("state :", dev_info.state)
-        print("static:", dev_info.static)
-        print("analog:", dev_info.analog) 
-        print("taskNo:", dev_info.taskNo)
-        print("taskType:", dev_info.taskType)
-        for idx, val in enumerate(dev_info.data):
-            print(idx, ": ", val)
 
+    def print_devinfo(self, dev_name):
+        if isinstance(dev_name, nevcl_devDAQmx):
+            dev_info = dev_name
+        else:
+            dev_info = next((d for group in (self.aos, self.ais, self.dos, self.dis)
+                             for d in group if d.name == dev_name), None)
+        if dev_info is None:
+            return None
+        dev_info.dump()
 
 
 
@@ -532,7 +431,7 @@ class nevcl_devDAQmx():
     state = 0
     static = True    # True when the task is for static operation (freq = 0.0, L_data = 1)
     analog = True    # True when the task supports analog signal
-    taskType = None  # SAO/DAO/SDO/DDO (string)
+    taskType = None  # AO/AI/DO/DI (string)
     taskNo = -1      # task No. used in the command set of nev_server
     data = []        # 2-d array data (an array for each channel)
     stim = []        # 2-d array data (an array for each channel)
@@ -602,7 +501,7 @@ class nevcl_devDAQmx():
         if len(chs) == 0:  # all channels are specified if chs is empty
             chs = [ idx for idx in range(self.N_data) ]
         for idx, ch in enumerate(chs):
-            d = self.get_ch(ch, data[idx])
+            d = self.get_ch(ch)
             if d is None:
                 return None
             res.append(d)
@@ -636,32 +535,17 @@ class nevcl_devDAQmx():
             
         
 if __name__ == "__main__":
-
     import sys
-    import nevcl_tcp, nevcl_sys
+    import nevcl_tcp
 
-    nevcl_logger = nevcl_sys.nevcl_Logger()
-
-    if len(sys.argv) > 1:
-        addr = str(sys.argv[1])
-    else:
-        addr = "localhost"
-
+    nevcl_sys.nevcl_Logger()
+    addr = str(sys.argv[1]) if len(sys.argv) > 1 else "localhost"
     tcpc = nevcl_tcp.nevcl_tcpCon(addr)
     daqmx_sys = nevcl_sysDAQmx(tcpc)
 
-    print("SAOS")
-    for dev in daqmx_sys.saos:
-        print(dev.id, dev.name, dev.model, dev.N_data, dev.L_data, dev.freq, dev.state)
-
-    print("DAOS")
-    for dev in daqmx_sys.daos:
-        print(dev.id, dev.name, dev.model, dev.N_data, dev.L_data, dev.freq, dev.state)
-
-    print("SDOS")
-    for dev in daqmx_sys.sdos:
-        print(dev.id, dev.name, dev.model, dev.N_data, dev.L_data, dev.freq, dev.state)
-
-    daqmx_sys.set_val_ch("Dev1", 0, [ 0.5 ])
-    daqmx_sys.update()
-    daqmx_sys.print_devinfo("Dev1")
+    for label, devices in (("AO", daqmx_sys.aos), ("AI", daqmx_sys.ais),
+                           ("DO", daqmx_sys.dos), ("DI", daqmx_sys.dis)):
+        print(label)
+        for dev in devices:
+            print(dev.id, dev.name, dev.model, dev.N_data,
+                  dev.L_data, dev.freq, dev.state)

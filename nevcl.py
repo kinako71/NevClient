@@ -75,7 +75,7 @@ class NevClientWindow(QMainWindow):
             import nevcl_sys
             self.tcp=nevcl_tcp.nevcl_tcpCon(self.address); self.daq=nevcl_daqmx.nevcl_sysDAQmx(self.tcp); self.scope=nevcl_niscope.nevcl_sysNIScope(self.tcp)
             nevcl_daqmx.sys=self.daq; nevcl_niscope.sys=self.scope
-            return 'DAQmx '+str(sum(map(len,[self.daq.saos,self.daq.daos,self.daq.sdos,self.daq.ddos])))+'台 / NI-Scope '+str(self.scope.N_devices)+'台 / PSA unions '+str(self.scope.N_unions)+'個'
+            return 'DAQmx '+str(sum(map(len,[self.daq.aos,self.daq.ais,self.daq.dos,self.daq.dis])))+'台 (AO/AI/DO/DI) / NI-Scope '+str(self.scope.N_devices)+'台 / PSA unions '+str(self.scope.N_unions)+'個'
         def done(res,err):
             self.run_btn.setEnabled(True)
             if err:self.statusBar().showMessage('接続に失敗しました'); self._error(str(err)); return
@@ -86,7 +86,7 @@ class NevClientWindow(QMainWindow):
         # DAQmx機器一覧と、選択可能なNI-Scope unionを画面に反映する。
         if not self.daq:return
         devs=[]
-        for typ,seq in [('SAO',self.daq.saos),('DAO',self.daq.daos),('SDO',self.daq.sdos),('DDO',self.daq.ddos)]:
+        for typ,seq in [('AO',self.daq.aos),('AI',self.daq.ais),('DO',self.daq.dos),('DI',self.daq.dis)]:
             for d in seq:devs.append([typ,d.id,d.name,d.model,d.N_data,d.L_data,d.freq,d.state])
         self.device_table.setRowCount(len(devs))
         for r,row in enumerate(devs):
@@ -241,7 +241,9 @@ class NevClientWindow(QMainWindow):
                     row[pcol]=f'{value_widget.value():.4f}'
             for row in self.raw[1:]:
                 if len(row)<=max(pcol,labelcol,devcol,chcol) or not row[labelcol]:continue
-                io,ch=row[chcol].split('-',1); dev=self.daq.get_devinfo(row[devcol],io)
+                io,ch=row[chcol].split('-',1); io=io.upper(); dev=self.daq.get_devinfo(row[devcol],io)
+                if io not in ('AO','DO'):
+                    raise ValueError('CSVの出力先は AO または DO を指定してください: '+row[devcol]+'/'+row[chcol])
                 if dev is None:raise ValueError('DAQmx channel not found: '+row[devcol]+'/'+row[chcol])
                 self.daq.set_ch(dev,int(ch),[float(row[pcol])])
             ret=self.daq.update(); self._log('DAQmx outputs updated: '+str(ret)); self._refresh_devices()
@@ -263,8 +265,8 @@ class NevClientWindow(QMainWindow):
                     if value_widget:
                         while len(row)<=pcol:row.append('')
                         row[pcol]=f'{value_widget.value():.4f}'
-            union=self.union_combo.currentData(); i=self.sweep_attribute_index if self.sweep_attribute_index is not None else self.sweep_param.currentIndex(); label=self._labels()[i]; row=self.raw[i+1]; dev=self.daq.get_devinfo(row[self.cols['DEV']],row[self.cols['CH']].split('-',1)[0]); ch=int(row[self.cols['CH']].split('-',1)[1])
-            if dev is None or dev.static: raise ValueError('スイープ対象には接続済みの動的DAQmxアナログ出力が必要です')
+            union=self.union_combo.currentData(); i=self.sweep_attribute_index if self.sweep_attribute_index is not None else self.sweep_param.currentIndex(); label=self._labels()[i]; row=self.raw[i+1]; io,chstr=row[self.cols['CH']].split('-',1); io=io.upper(); dev=self.daq.get_devinfo(row[self.cols['DEV']],io); ch=int(chstr)
+            if io != 'AO' or dev is None or dev.static or not dev.analog: raise ValueError('スイープ対象には接続済みの動的 AO 出力が必要です')
             dirs=[[1],[-1],[1,-1],[-1,1]][self.sweep_dir.currentIndex()]; self.sweep_dirs=dirs[1:]; direction=dirs[0]
             scope_devs=[]
             for r,(di,d,c) in enumerate(self.scope_channels):
@@ -294,7 +296,9 @@ class NevClientWindow(QMainWindow):
                 for orow in self.raw[1:]:
                     val=orow[mode_col] if mode_col<len(orow) else ''
                     if not val or val.startswith('#'):continue
-                    od=self.daq.get_devinfo(orow[self.cols['DEV']],orow[self.cols['CH']].split('-',1)[0]); och=int(orow[self.cols['CH']].split('-',1)[1]); self.daq.set_ch(od,och,[float(val)])
+                    oio,ochstr=orow[self.cols['CH']].split('-',1); oio=oio.upper(); od=self.daq.get_devinfo(orow[self.cols['DEV']],oio); och=int(ochstr)
+                    if oio not in ('AO','DO') or od is None: raise ValueError('固定出力先が見つからないか、出力種別が不正です: '+orow[self.cols['DEV']]+'/'+orow[self.cols['CH']])
+                    self.daq.set_ch(od,och,[float(val)])
             self.daq.update(); self.sweep_union=union; self.sweep_label=label; self.sweep_operation=self.sweep_mode.currentText(); self.sweep_bookmark=0; self.sweep_nchan=nchan; self.sweep_freq=freq; self.sweep_channel_info=channel_info; self.sweep_data=[[] for _ in range(nchan)]; self.sweep_param_values=[]
             self.sweep_active=True; self.run_btn.setEnabled(False); self.stop_btn.setEnabled(True)
             QTimer.singleShot(int(self.idelay.value()*1000),self._launch_sweep)
