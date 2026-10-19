@@ -436,12 +436,25 @@ class nevcl_sysNIScope():
         return last, data
 
     def set_psa(self, unionNo,
-                param_conf: "[ SAO/DAO/SDO, device No., channel No.]",
+                param_conf: "[ AO, device No., channel No.]",
                 range_conf: "[ start, stop, steps]",
                 fetch_skip: "number of samples to be skipped when fetching data"):
-        # 掃引出力チャンネル、開始／終了／点数、取得を飛ばすサンプル数を指定する。
-        pc_str = '[' + str(param_conf[0]) + ' ' + str(param_conf[1]) + ' ' + str(param_conf[2]) + ']'
-        rc_str = '[' + str(range_conf[0]) + ' ' + str(range_conf[1]) + ' ' + str(range_conf[2]) + ']'
+        # AOチャンネルを掃引するPSAを設定する。
+        # param_conf = ["AO", device No., channel No.]
+        # range_conf = [start, stop, steps]
+        if len(param_conf) != 3:
+            raise ValueError("param_conf must be ['AO', device_no, channel_no]")
+        if str(param_conf[0]).upper() != "AO":
+            raise ValueError("Only 'AO' is supported; SAO/DAO/SDO/DDO are not used")
+        if len(range_conf) != 3:
+            raise ValueError("range_conf must be [start, stop, steps]")
+        if int(range_conf[2]) < 1:
+            raise ValueError("range_conf steps must be >= 1")
+        if int(fetch_skip) < 0:
+            raise ValueError("fetch_skip must be >= 0")
+
+        pc_str = '[AO ' + str(int(param_conf[1])) + ' ' + str(int(param_conf[2])) + ']'
+        rc_str = '[' + str(range_conf[0]) + ' ' + str(range_conf[1]) + ' ' + str(int(range_conf[2])) + ']'
         comstr = "SET PSA " + str(unionNo) + ' ' + pc_str + ' ' + rc_str + ' ' + str(fetch_skip)
         print("#  set_psa():", comstr)
         res = self._get_server_response(comstr, None)
@@ -586,7 +599,7 @@ if __name__ == "__main__":
     niscope_sys.set_union_channelConf(1, 0, 1, [ [10, "AC"] ])
     niscope_sys.set_union_trig(1, [ 0, 'IMMEDIATE', '*', '*', '*', 'POSITIVE', 'DC', '*', '*'])
     niscope_sys.union_list[1].dump()
-    niscope_sys.set_psa(1, [ 'SAO', 0, 0 ], [0, 0.2, 4], 1000)
+    niscope_sys.set_psa(1, [ 'AO', 0, 37 ], [0.0, 0.2, 40], 2500)
     niscope_sys.run_psa()
     while(True):
         res = niscope_sys.get_psa_stat()
