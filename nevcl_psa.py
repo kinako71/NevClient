@@ -33,6 +33,8 @@ class SweepPanel(QWidget):
         form.addRow(self.error_bar)
         buttons=QHBoxLayout(); self.run_button=QPushButton('開始'); self.stop_button=QPushButton('停止'); self.stop_button.setEnabled(False); buttons.addWidget(self.run_button); buttons.addWidget(self.stop_button); form.addRow(buttons); layout.addWidget(cfg); layout.addStretch(1); split.addWidget(controls)
         plots=QWidget(); plot_layout=QVBoxLayout(plots)
+        x_axis_row=QHBoxLayout(); x_axis_row.addWidget(QLabel('横軸'))
+        self.x_axis=QComboBox(); self.x_axis.addItem('掃引パラメータ',-1); x_axis_row.addWidget(self.x_axis,1); plot_layout.addLayout(x_axis_row)
         channel_group=QGroupBox('NI-Scopeチャンネル（使用・Plot・Offset）'); channel_layout=QVBoxLayout(channel_group)
         self.channel_plot_table=QTableWidget(0,4); self.channel_plot_table.setHorizontalHeaderLabels(['使用','Plot','チャンネル','Offset (V)']); self.channel_plot_table.horizontalHeader().setSectionResizeMode(2,QHeaderView.ResizeMode.Stretch); self.channel_plot_table.verticalHeader().hide(); self.channel_plot_table.setMaximumHeight(150); channel_layout.addWidget(self.channel_plot_table); plot_layout.addWidget(channel_group)
         self.fig,self.ax,self.canvas,self.plot_toolbar=_plot(plots); self.ax.set_box_aspect(1)

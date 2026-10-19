@@ -51,8 +51,8 @@ class NevClientWindow(QMainWindow):
         split=QSplitter(Qt.Orientation.Horizontal); outer.addWidget(split,1)
         self.parameter_panel=ParameterPanel(); self.set_table=self.parameter_panel.set_table; self.attr_table=self.parameter_panel.attr_table; self.param_table=self.parameter_panel.param_table; self.set_table.cellClicked.connect(self.select_set); split.addWidget(self.parameter_panel)
         self.tabs=QTabWidget(); split.addWidget(self.tabs); split.setSizes([570,880])
-        self.sweep_panel=SweepPanel(); self.fig=self.sweep_panel.fig; self.ax=self.sweep_panel.ax; self.canvas=self.sweep_panel.canvas; self.sweep_mode=self.sweep_panel.mode; self.sweep_param=self.sweep_panel.parameter; self.sweep_start=self.sweep_panel.start; self.sweep_stop=self.sweep_panel.stop; self.sweep_steps=self.sweep_panel.steps; self.sweep_dir=self.sweep_panel.direction; self.idelay=self.sweep_panel.initial_delay; self.period=self.sweep_panel.period; self.delay=self.sweep_panel.delay; self.frequency=self.sweep_panel.frequency; self.run_btn=self.sweep_panel.run_button; self.stop_btn=self.sweep_panel.stop_button; self.union_combo=self.sweep_panel.union; self.channel_plot_table=self.sweep_panel.channel_plot_table
-        self.error_bar=self.sweep_panel.error_bar; self.run_btn.clicked.connect(self.start_sweep); self.stop_btn.clicked.connect(self.stop_sweep); self.sweep_panel.save_button.clicked.connect(self.save_psa_data); self.sweep_panel.save_image_button.clicked.connect(self.save_psa_plot_image); self.sweep_mode.currentTextChanged.connect(self._select_sweep_mode); self.tabs.addTab(self.sweep_panel,'Parameter Sweeper')
+        self.sweep_panel=SweepPanel(); self.fig=self.sweep_panel.fig; self.ax=self.sweep_panel.ax; self.canvas=self.sweep_panel.canvas; self.sweep_mode=self.sweep_panel.mode; self.sweep_param=self.sweep_panel.parameter; self.sweep_start=self.sweep_panel.start; self.sweep_stop=self.sweep_panel.stop; self.sweep_steps=self.sweep_panel.steps; self.sweep_dir=self.sweep_panel.direction; self.idelay=self.sweep_panel.initial_delay; self.period=self.sweep_panel.period; self.delay=self.sweep_panel.delay; self.frequency=self.sweep_panel.frequency; self.run_btn=self.sweep_panel.run_button; self.stop_btn=self.sweep_panel.stop_button; self.union_combo=self.sweep_panel.union; self.channel_plot_table=self.sweep_panel.channel_plot_table; self.sweep_x_axis=self.sweep_panel.x_axis
+        self.error_bar=self.sweep_panel.error_bar; self.run_btn.clicked.connect(self.start_sweep); self.stop_btn.clicked.connect(self.stop_sweep); self.sweep_x_axis.currentIndexChanged.connect(self._plot_channel_settings_changed); self.sweep_panel.save_button.clicked.connect(self.save_psa_data); self.sweep_panel.save_image_button.clicked.connect(self.save_psa_plot_image); self.sweep_mode.currentTextChanged.connect(self._select_sweep_mode); self.tabs.addTab(self.sweep_panel,'Parameter Sweeper')
         self.pulse_panel=PulseStimulusPanel(); self.pulse_panel.fire_button.clicked.connect(self.fire_pulse_stimulus); self.pulse_panel.save_button.clicked.connect(self.save_psa_data); self.pulse_panel.save_image_button.clicked.connect(self.save_psa_plot_image); self.tabs.addTab(self.pulse_panel,'Pulse Stimulus')
         self.prc_panel=PRCPanel(); self.tabs.addTab(self.prc_panel,'PRC')
         self.log=QPlainTextEdit(); self.log.setReadOnly(True); self.tabs.addTab(self.log,'通信ログ')
@@ -211,7 +211,9 @@ class NevClientWindow(QMainWindow):
                     raise ValueError('CSVの出力先は AO または DO を指定してください: '+row[devcol]+'/'+row[chcol])
                 if dev is None:raise ValueError('DAQmx channel not found: '+row[devcol]+'/'+row[chcol])
                 self.daq.set_ch(dev,int(ch),[float(row[pcol])])
-            ret=self.daq.update(); self._log('DAQmx outputs updated: '+str(ret)); self._refresh_devices()
+            ret=self.daq.update()
+            if ret is None:raise RuntimeError('DAQmx出力の更新に失敗しました')
+            self._log('DAQmx outputs updated: '+str(ret)); self._refresh_devices()
         except Exception as e:self._error(str(e))
     def zero_clear(self):
         # DAQmx出力をゼロクリアする。
@@ -237,7 +239,7 @@ class NevClientWindow(QMainWindow):
             for r,(di,d,c) in enumerate(self.scope_channels):
                 if self.channel_plot_table.cellWidget(r,0).isChecked() and di not in scope_devs:scope_devs.append(di)
             if not scope_devs:raise ValueError('NI-Scope channelを1つ以上有効にしてください')
-            self.scope.set_union_devlist(union,scope_devs)
+            if self.scope.set_union_devlist(union,scope_devs) is None:raise RuntimeError('NI-Scope unionの機器設定に失敗しました')
             nchan=0
             channel_info=[]
             for di in scope_devs:
@@ -248,12 +250,13 @@ class NevClientWindow(QMainWindow):
                     if active:conf.append([2,'DC'])
                     else:conf.append(['*','*'])
                     channel_info.append({'name':f'{d.name}/CH{c}','active':active,'show':self.channel_plot_table.cellWidget(r,1).isChecked(),'voffset':self.channel_plot_table.cellWidget(r,3).value(),'table_row':r,'device':d,'channel':c,'range':'2','coupling':'DC'})
-                self.scope.set_union_channelConf(union,di,0,conf)
+                if self.scope.set_union_channelConf(union,di,0,conf) is None:raise RuntimeError(f'NI-Scope機器{di}のチャンネル設定に失敗しました')
                 nchan+=devscope.N_channels
             freq=self.frequency.currentData(); dlen=int((self.period.value()+self.delay.value())*freq)
-            self.scope.set_union_dlen(union,dlen); self.scope.set_union_freq(union,freq)
+            if self.scope.set_union_dlen(union,dlen) is None:raise RuntimeError('NI-Scopeデータ長の設定に失敗しました')
+            if self.scope.set_union_freq(union,freq) is None:raise RuntimeError('NI-Scopeサンプリング周波数の設定に失敗しました')
             stop=self.sweep_stop.value() if direction>0 else self.sweep_start.value(); start=self.sweep_start.value() if direction>0 else self.sweep_stop.value()
-            self.scope.set_psa(union,[dev.taskType,dev.taskNo,ch],[start,stop,self.sweep_steps.value()],int(self.delay.value()*freq))
+            if self.scope.set_psa(union,[dev.taskType,dev.taskNo,ch],[start,stop,self.sweep_steps.value()],int(self.delay.value()*freq)) is None:raise RuntimeError('SET PSAがサーバーに拒否されました。ターミナルのサーバーエラーを確認してください')
             self.daq.set_ch(dev,ch,[start])
             # 固定値は画面の一覧に依存せず、CSVの選択中モード列から直接DAQmxへ送る。
             selected_mode=self.sweep_mode.currentText(); mode_col=self.cols.get(selected_mode)
@@ -264,13 +267,16 @@ class NevClientWindow(QMainWindow):
                     oio,ochstr=orow[self.cols['CH']].split('-',1); oio=oio.upper(); od=self.daq.get_devinfo(orow[self.cols['DEV']],oio); och=int(ochstr)
                     if oio not in ('AO','DO') or od is None: raise ValueError('固定出力先が見つからないか、出力種別が不正です: '+orow[self.cols['DEV']]+'/'+orow[self.cols['CH']])
                     self.daq.set_ch(od,och,[float(val)])
-            self.daq.update(); self.sweep_union=union; self.sweep_label=label; self.sweep_operation=self.sweep_mode.currentText(); self.sweep_bookmark=0; self.sweep_nchan=nchan; self.sweep_freq=freq; self.sweep_channel_info=channel_info; self.sweep_data=[[] for _ in range(nchan)]; self.sweep_param_values=[]
+            if self.daq.update() is None:raise RuntimeError('掃引開始前のDAQmx出力更新に失敗しました')
+            self.sweep_union=union; self.sweep_label=label; self.sweep_operation=self.sweep_mode.currentText(); self.sweep_bookmark=0; self.sweep_nchan=nchan; self.sweep_freq=freq; self.sweep_channel_info=channel_info; self.sweep_data=[[] for _ in range(nchan)]; self.sweep_param_values=[]; self._refresh_sweep_x_axis(channel_info)
             self.sweep_active=True; self.run_btn.setEnabled(False); self.stop_btn.setEnabled(True)
             QTimer.singleShot(int(self.idelay.value()*1000),self._launch_sweep)
         except Exception as e:self._error(str(e))
     def _launch_sweep(self):
         if not self.sweep_active:return
-        try:self.scope.run_psa(); self.timer.start(); self._log('PSA started: '+self.sweep_label)
+        try:
+            if self.scope.run_psa() is None:raise RuntimeError('RUN PSAがサーバーに拒否されました。ターミナルのサーバーエラーを確認してください')
+            self.timer.start(); self._log('PSA started: '+self.sweep_label)
         except Exception as e:self.stop_sweep(); self._error(str(e))
     def stop_sweep(self):
         if not self.sweep_active:return
@@ -288,7 +294,9 @@ class NevClientWindow(QMainWindow):
             if status is None:return
             points,pvalue,state=status
             if points>self.sweep_bookmark:
-                last,data=self.scope.get_psa_data(self.sweep_bookmark,None)
+                result=self.scope.get_psa_data(self.sweep_bookmark,None)
+                if result is None:raise RuntimeError('GET PSA DATAに失敗しました。ターミナルのサーバーエラーを確認してください')
+                last,data=result
                 if data:
                     for param,channels in data:
                         self.sweep_param_values.append(param)
@@ -297,7 +305,9 @@ class NevClientWindow(QMainWindow):
                 self.sweep_bookmark=last+1; self.statusBar().showMessage(f'PSA {state}: {self.sweep_bookmark} points, current {pvalue:g} V'); self._update_plots()
             if state!='RUNNING':
                 if self.sweep_dirs:
-                    direction=self.sweep_dirs.pop(0); self.sweep_bookmark=0; start=self.sweep_start.value() if direction>0 else self.sweep_stop.value(); end=self.sweep_stop.value() if direction>0 else self.sweep_start.value(); idx=self._labels().index(self.sweep_label); row=self.raw[idx+1]; dev=self.daq.get_devinfo(row[self.cols['DEV']],row[self.cols['CH']].split('-',1)[0]); ch=int(row[self.cols['CH']].split('-',1)[1]); self.scope.set_psa(self.sweep_union,[dev.taskType,dev.taskNo,ch],[start,end,self.sweep_steps.value()],int(self.delay.value()*self.sweep_freq)); self.scope.run_psa()
+                    direction=self.sweep_dirs.pop(0); self.sweep_bookmark=0; start=self.sweep_start.value() if direction>0 else self.sweep_stop.value(); end=self.sweep_stop.value() if direction>0 else self.sweep_start.value(); idx=self._labels().index(self.sweep_label); row=self.raw[idx+1]; dev=self.daq.get_devinfo(row[self.cols['DEV']],row[self.cols['CH']].split('-',1)[0]); ch=int(row[self.cols['CH']].split('-',1)[1])
+                    if self.scope.set_psa(self.sweep_union,[dev.taskType,dev.taskNo,ch],[start,end,self.sweep_steps.value()],int(self.delay.value()*self.sweep_freq)) is None:raise RuntimeError('逆方向のSET PSAがサーバーに拒否されました')
+                    if self.scope.run_psa() is None:raise RuntimeError('逆方向のRUN PSAがサーバーに拒否されました')
                 else:self.stop_sweep()
         except Exception as e:self.stop_sweep(); self._error(str(e))
     def _plot_channel_settings_changed(self,*_args):
@@ -310,40 +320,44 @@ class NevClientWindow(QMainWindow):
         if self.sweep_data and hasattr(self,'sweep_label'):
             self._update_plots()
 
+    def _refresh_sweep_x_axis(self,channel_info):
+        """掃引パラメータと有効な取得チャンネルを横軸候補にする。"""
+        previous=self.sweep_x_axis.currentData(); self.sweep_x_axis.blockSignals(True); self.sweep_x_axis.clear()
+        self.sweep_x_axis.addItem('掃引パラメータ',-1)
+        for idx,info in enumerate(channel_info):
+            if info['active']:self.sweep_x_axis.addItem(info['name'],idx)
+        selected=self.sweep_x_axis.findData(previous)
+        self.sweep_x_axis.setCurrentIndex(selected if selected>=0 else 0); self.sweep_x_axis.blockSignals(False)
+
     def _update_plots(self):
-        # 取り込んだデータから掃引結果グラフを再描画する。
-        self.ax.clear(); self.ax.set_box_aspect(1); self.ax.grid(True)
+        # 横軸に掃引パラメータまたは取得チャンネルの平均値を選び、両プロットを同期する。
+        x_index=self.sweep_x_axis.currentData()
+        if x_index is None or x_index<0 or x_index>=len(self.sweep_data):x_index=-1
+        x_label=self.sweep_label if x_index<0 else self.sweep_channel_info[x_index]['name']
         colors=['#ff0000','#0000ff','#00aa00','#ff00ff','#cc9900','#00aaaa','#883355','#335588']
-        for i,series in enumerate(self.sweep_data):
-            info=self.sweep_channel_info[i] if i<len(self.sweep_channel_info) else {'active':True,'name':f'CH{i}'}
-            if not info.get('show',info['active']):continue
-            color=colors[i%len(colors)]; name=info['name']
-            offset=info.get('voffset',0.0)
-            if self.sweep_operation=='BDMODE':
-                low=[(min(seg) if seg else 0)+offset for seg in series]; high=[(max(seg) if seg else 0)+offset for seg in series]
-                x=self.sweep_param_values[:len(series)]; self.ax.plot(x,low,label=f'{name} min',color=color); self.ax.plot(x,high,label=f'{name} max',color=color)
-            else:
-                raw_ys=[sum(seg)/len(seg) if seg else 0 for seg in series]; ys=[mean+offset for mean in raw_ys]
-                if self.error_bar.isChecked():
-                    errs=[(sum((v-mean)**2 for v in seg)/len(seg))**.5 if seg else 0 for seg,mean in zip(series,raw_ys)]
-                    self.ax.errorbar(self.sweep_param_values[:len(ys)],ys,yerr=errs,label=name,color=color,linestyle='solid',capsize=2)
-                else:self.ax.plot(self.sweep_param_values[:len(ys)],ys,label=name,color=color)
-        if self.sweep_channel_info:self.ax.legend(loc='best')
-        self.ax.set_xlabel(self.sweep_label); self.ax.set_ylabel('Voltage (V)'); self.canvas.draw()
-        # Pulse Stimulusタブにも同じPSA結果を表示し、刺激波形と並べて確認できるようにする。
-        pulse_ax=self.pulse_panel.ax; pulse_ax.clear(); pulse_ax.set_box_aspect(1); pulse_ax.grid(True)
-        for i,series in enumerate(self.sweep_data):
-            info=self.sweep_channel_info[i] if i<len(self.sweep_channel_info) else {'active':True,'name':f'CH{i}'}
-            if not info.get('show',info['active']):continue
-            color=colors[i%len(colors)]; offset=info.get('voffset',0.0)
-            if self.sweep_operation=='BDMODE':
-                pulse_ax.plot(self.sweep_param_values[:len(series)],[(min(seg) if seg else 0)+offset for seg in series],label=f'{info["name"]} min',color=color)
-                pulse_ax.plot(self.sweep_param_values[:len(series)],[(max(seg) if seg else 0)+offset for seg in series],label=f'{info["name"]} max',color=color)
-            else:
-                ys=[(sum(seg)/len(seg) if seg else 0)+offset for seg in series]
-                pulse_ax.plot(self.sweep_param_values[:len(ys)],ys,label=info['name'],color=color)
-        if self.sweep_channel_info:pulse_ax.legend(loc='best')
-        pulse_ax.set_xlabel(self.sweep_label); pulse_ax.set_ylabel('Voltage (V)'); self.pulse_panel.canvas.draw_idle()
+        for ax in (self.ax,self.pulse_panel.ax):
+            ax.clear(); ax.set_box_aspect(1); ax.grid(True)
+            x_source=self.sweep_data[x_index] if x_index>=0 else None
+            for i,series in enumerate(self.sweep_data):
+                info=self.sweep_channel_info[i] if i<len(self.sweep_channel_info) else {'active':True,'show':True,'name':f'CH{i}','voffset':0.0}
+                if not info.get('show',info['active']):continue
+                color=colors[i%len(colors)]; name=info['name']; offset=info.get('voffset',0.0)
+                n=len(series)
+                if x_source is not None:n=min(n,len(x_source))
+                x=self.sweep_param_values[:n] if x_source is None else [sum(seg)/len(seg) if seg else 0 for seg in x_source[:n]]
+                if self.sweep_operation=='BDMODE':
+                    low=[(min(seg) if seg else 0)+offset for seg in series[:n]]; high=[(max(seg) if seg else 0)+offset for seg in series[:n]]
+                    ax.plot(x,low,label=f'{name} min',color=color); ax.plot(x,high,label=f'{name} max',color=color)
+                else:
+                    means=[sum(seg)/len(seg) if seg else 0 for seg in series[:n]]; ys=[mean+offset for mean in means]
+                    if self.error_bar.isChecked():
+                        yerr=[(sum((v-mean)**2 for v in seg)/len(seg))**.5 if seg else 0 for seg,mean in zip(series[:n],means)]
+                        xerr=None if x_source is None else [(sum((v-mean)**2 for v in seg)/len(seg))**.5 if seg else 0 for seg in x_source[:n]]
+                        ax.errorbar(x,ys,xerr=xerr,yerr=yerr,label=name,color=color,linestyle='solid',capsize=2)
+                    else:ax.plot(x,ys,label=name,color=color)
+            if self.sweep_channel_info:ax.legend(loc='best')
+            ax.set_xlabel(x_label); ax.set_ylabel('Voltage (V)')
+        self.canvas.draw(); self.pulse_panel.canvas.draw_idle()
 
     def fire_pulse_stimulus(self):
         """Pulse Stimulusタブで設定した波形を選択中のDAQmx出力へ送る。"""

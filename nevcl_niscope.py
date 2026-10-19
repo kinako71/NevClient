@@ -405,6 +405,9 @@ class nevcl_sysNIScope():
         comstr = "GET PSA DATA " + rangespec
         # contact nev_server
         res = self._get_server_response(comstr, None)
+        if res is None:
+            # #NG応答や通信切断時にack=res[0]で別の例外を起こさない。
+            return None
         # check acknowledgement
         ack = res[0]
         resstr = "#PSADATA " + str(start)

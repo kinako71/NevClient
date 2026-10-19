@@ -180,10 +180,10 @@ class nevcl_sysDAQmx():
             else:  # dynamic devices
                 # update the data for all the channels
                 if self.set_ao_data(dev_info, 0, -1, False) == None:
-                    continue
+                    return None
                 # issue RUN AO command
                 if self.run_ao(dev_info) == None:
-                    continue
+                    return None
                 # remove dev_info from self.update_list
                 self.update_list.remove(dev_info)
                 continue
@@ -209,7 +209,8 @@ class nevcl_sysDAQmx():
         print("  response:", res)
         if res is None:  # disconnected
             return None
-        if res[0] != "#SET" + dev_info.taskType + " " + str(dev_info.taskNo): # unexpected response
+        expected_ack = "#SET" + dev_info.taskType + " " + str(dev_info.taskNo)
+        if not res or res[0] != expected_ack: # unexpected response
             print("! unexpected response")
             return None
         ## [ calculate the last channel's index + 1 ]
