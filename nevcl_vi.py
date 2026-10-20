@@ -6,7 +6,7 @@ from matplotlib.figure import Figure
 from PyQt6.QtCore import QObject, pyqtSignal, Qt
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QGroupBox, QFormLayout,
-    QPushButton, QLabel, QDoubleSpinBox, QSpinBox, QLineEdit, QComboBox,
+    QPushButton, QLabel, QDoubleSpinBox, QSpinBox, QLineEdit, QComboBox, QCheckBox,
 )
 
 
@@ -94,6 +94,9 @@ class VoltageCurrentPanel(QWidget):
         self.toolbar = NavigationToolbar2QT(self.canvas, plot_widget)
         plot_layout.addWidget(self.canvas, 1)
         plot_layout.addWidget(self.toolbar)
+        self.show_error_bars = QCheckBox('エラーバー表示')
+        self.show_error_bars.setChecked(True)
+        plot_layout.addWidget(self.show_error_bars)
         self.ax.set_box_aspect(1)
         self.ax.set_xlabel('Vdiff [V]')
         self.ax.set_ylabel('Istim [A]')
@@ -130,10 +133,13 @@ class VoltageCurrentPanel(QWidget):
             x = [voltage[i] for i in valid]
             y = [mean[i] for i in valid]
             yerr = [std[i] or 0 for i in valid]
-            self.ax.errorbar(
-                x, y, xerr=None, yerr=yerr, fmt='o', ecolor='#333333',
-                elinewidth=1.5, capsize=4, capthick=1.5, markersize=4,
-            )
+            if self.show_error_bars.isChecked():
+                self.ax.errorbar(
+                    x, y, xerr=None, yerr=yerr, fmt='o', ecolor='#333333',
+                    elinewidth=1.5, capsize=4, capthick=1.5, markersize=4,
+                )
+            else:
+                self.ax.plot(x, y, 'o-')
         self.ax.set_xlabel('Vdiff [V]')
         self.ax.set_ylabel('Istim [A]')
         self.ax.set_box_aspect(1)

@@ -66,6 +66,7 @@ class NevClientWindow(QMainWindow):
         panel.stop_button.clicked.connect(self.stop_voltage_current_measurement)
         panel.save_csv_button.clicked.connect(self.save_voltage_current_csv)
         panel.save_image_button.clicked.connect(self.save_voltage_current_image)
+        panel.show_error_bars.toggled.connect(self.redraw_voltage_current_plot)
     def start_voltage_current_measurement(self):
         # viplot.pyと同じ範囲・出力チャンネルの測定をワーカースレッドで開始する。
         panel=self.voltage_current_panel
@@ -94,6 +95,11 @@ class NevClientWindow(QMainWindow):
         for key in ('voltage','mean','variance','std'):result[key][index]=point[key]
         panel=self.voltage_current_panel; panel.show_results(result['voltage'],result['mean'],result['std'])
         panel.save_csv_button.setEnabled(True); panel.save_image_button.setEnabled(True)
+    def redraw_voltage_current_plot(self,*_args):
+        # エラーバー設定を切り替えたら、保持中の測定値で描画し直す。
+        result=self.voltage_current_results
+        if result:
+            self.voltage_current_panel.show_results(result['voltage'],result['mean'],result['std'])
     def stop_voltage_current_measurement(self):
         if hasattr(self,'voltage_current_job') and self.voltage_current_thread.isRunning():
             self.voltage_current_job.request_stop(); self.voltage_current_panel.status.setText('停止処理中…')
