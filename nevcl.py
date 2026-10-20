@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """PyQt6版NEVクライアントの起動処理と画面間の連携をまとめたファイル。
 
-画面部品は nevcl_param.py / nevcl_psa.py、CSVの読み書きは nevcl_csvif.py、
+画面部品は nevcl_param.py / nevcl_psa.py / nevcl_vi.py、CSVの読み書きは nevcl_csvif.py、
 機器通信は nevcl_tcp.py / nevcl_daqmx.py / nevcl_niscope.py に分けている。
 画面配置や操作の流れを変えるときは主にこのファイルを編集する。
 """
@@ -17,6 +17,7 @@ import nevcl_tcp, nevcl_daqmx, nevcl_niscope
 from nevcl_csvif import CsvParameterFile
 from nevcl_param import ATTRS, ParameterPanel
 from nevcl_psa import SweepPanel, PulseStimulusPanel, PRCPanel
+from nevcl_vi import VoltageCurrentPanel, VoltageCurrentJob
 
 ATTRS=list(ATTRS)
 
@@ -36,7 +37,8 @@ class NevClientWindow(QMainWindow):
         # チャンネルごとのプロットオフセットを次回起動時にも読み込めるよう保存する。
         self.plot_offset_settings=QSettings('KohnoLab','NEVClientPyQt')
         self.address=address; self.tcp=None; self.daq=None; self.scope=None; self.csv_model=None; self.csv_path=None; self.raw=[]; self.cols={}; self.pset_cols=[]; self.active_set=None
-        self.sweep_active=False; self.sweep_bookmark=0; self.sweep_dirs=[]; self.psa_data=[]; self.channel_rows=[]; self.scope_channels=[]; self.sweep_channel_info=[]; self.sweep_data=[]; self.sweep_param_values=[]; self.active_stim_target=None
+        self.voltage_current_results=None
+        self.sweep_active=False; self.sweep_bookmark=0; self.sweep_dirs=[]; self.psa_data=[]; self.channel_rows=[]; self.scope_channels=[]; self.daqmx_ai_channels=[]; self.sweep_channel_info=[]; self.sweep_data=[]; self.sweep_param_values=[]; self.active_stim_target=None
         self._build_ui(); self.timer=QTimer(self); self.timer.setInterval(400); self.timer.timeout.connect(self.poll_sweep)
         self.statusBar().showMessage(f'{address}:9000 | 未接続')
 
@@ -52,10 +54,87 @@ class NevClientWindow(QMainWindow):
         self.parameter_panel=ParameterPanel(); self.set_table=self.parameter_panel.set_table; self.attr_table=self.parameter_panel.attr_table; self.param_table=self.parameter_panel.param_table; self.set_table.cellClicked.connect(self.select_set); split.addWidget(self.parameter_panel)
         self.tabs=QTabWidget(); split.addWidget(self.tabs); split.setSizes([570,880])
         self.sweep_panel=SweepPanel(); self.fig=self.sweep_panel.fig; self.ax=self.sweep_panel.ax; self.canvas=self.sweep_panel.canvas; self.sweep_mode=self.sweep_panel.mode; self.sweep_param=self.sweep_panel.parameter; self.sweep_start=self.sweep_panel.start; self.sweep_stop=self.sweep_panel.stop; self.sweep_steps=self.sweep_panel.steps; self.sweep_dir=self.sweep_panel.direction; self.idelay=self.sweep_panel.initial_delay; self.period=self.sweep_panel.period; self.delay=self.sweep_panel.delay; self.frequency=self.sweep_panel.frequency; self.run_btn=self.sweep_panel.run_button; self.stop_btn=self.sweep_panel.stop_button; self.union_combo=self.sweep_panel.union; self.channel_plot_table=self.sweep_panel.channel_plot_table; self.sweep_x_axis=self.sweep_panel.x_axis
-        self.error_bar=self.sweep_panel.error_bar; self.run_btn.clicked.connect(self.start_sweep); self.stop_btn.clicked.connect(self.stop_sweep); self.sweep_x_axis.currentIndexChanged.connect(self._plot_channel_settings_changed); self.sweep_panel.save_button.clicked.connect(self.save_psa_data); self.sweep_panel.save_image_button.clicked.connect(self.save_psa_plot_image); self.sweep_mode.currentTextChanged.connect(self._select_sweep_mode); self.tabs.addTab(self.sweep_panel,'Parameter Sweeper')
+        self.error_bar=self.sweep_panel.error_bar; self.run_btn.clicked.connect(self.start_sweep); self.stop_btn.clicked.connect(self.stop_sweep); self.sweep_x_axis.currentIndexChanged.connect(self._plot_channel_settings_changed); self.sweep_panel.measurement_source.currentIndexChanged.connect(self._select_measurement_source); self.sweep_panel.save_button.clicked.connect(self.save_psa_data); self.sweep_panel.save_image_button.clicked.connect(self.save_psa_plot_image); self.sweep_mode.currentTextChanged.connect(self._select_sweep_mode); self.tabs.addTab(self.sweep_panel,'Parameter Sweeper')
         self.pulse_panel=PulseStimulusPanel(); self.pulse_panel.fire_button.clicked.connect(self.fire_pulse_stimulus); self.pulse_panel.save_button.clicked.connect(self.save_psa_data); self.pulse_panel.save_image_button.clicked.connect(self.save_psa_plot_image); self.tabs.addTab(self.pulse_panel,'Pulse Stimulus')
         self.prc_panel=PRCPanel(); self.tabs.addTab(self.prc_panel,'PRC')
+        self.voltage_current_panel=VoltageCurrentPanel(); self.tabs.addTab(self.voltage_current_panel,'電圧-電流')
+        self._setup_voltage_current_panel()
         self.log=QPlainTextEdit(); self.log.setReadOnly(True); self.tabs.addTab(self.log,'通信ログ')
+    def _setup_voltage_current_panel(self):
+        panel=self.voltage_current_panel
+        panel.run_button.clicked.connect(self.start_voltage_current_measurement)
+        panel.stop_button.clicked.connect(self.stop_voltage_current_measurement)
+        panel.save_csv_button.clicked.connect(self.save_voltage_current_csv)
+        panel.save_image_button.clicked.connect(self.save_voltage_current_image)
+    def start_voltage_current_measurement(self):
+        # viplot.pyと同じ範囲・出力チャンネルの測定をワーカースレッドで開始する。
+        panel=self.voltage_current_panel
+        try:
+            sweep_output=panel.sweep_channel.currentData()
+            if sweep_output is None:raise ValueError('DAQmxの動的AOチャンネルを選択してください。先にサーバーへ接続してください。')
+            segments=[(start.value(),stop.value(),points.value()) for start,stop,points in panel.segments]
+            if any(start==stop for start,stop,_ in segments):raise ValueError('各掃引区間の開始値と終了値は異なる値にしてください')
+            if not panel.visa_address.text().strip():raise ValueError('Keithley VISAアドレスを入力してください')
+            settings={'host':panel.host.text().strip() or 'localhost','visa_address':panel.visa_address.text().strip(),
+                'sweep_channel':sweep_output,'segments':segments,'repeats':panel.repeats.value()}
+            self.voltage_current_thread=QThread(self); self.voltage_current_job=VoltageCurrentJob(settings); self.voltage_current_job.moveToThread(self.voltage_current_thread)
+            self.voltage_current_thread.started.connect(self.voltage_current_job.run); self.voltage_current_job.progress.connect(panel.status.setText)
+            self.voltage_current_job.point_updated.connect(self.update_voltage_current_plot)
+            self.voltage_current_job.done.connect(self._voltage_current_finished); self.voltage_current_job.done.connect(self.voltage_current_thread.quit)
+            self.voltage_current_thread.finished.connect(self.voltage_current_job.deleteLater); self.voltage_current_thread.finished.connect(self.voltage_current_thread.deleteLater)
+            self.voltage_current_results=None; panel.show_results([],[],[]); panel.save_csv_button.setEnabled(False); panel.save_image_button.setEnabled(False)
+            panel.run_button.setEnabled(False); panel.stop_button.setEnabled(True); panel.status.setText('接続中…'); self.voltage_current_thread.start()
+        except Exception as error:self._error(str(error))
+    def update_voltage_current_plot(self,point):
+        # 各測定点の統計値を受け取り、測定中のグラフを更新する。
+        count=point['count']
+        if self.voltage_current_results is None:
+            self.voltage_current_results={'voltage':[None]*count,'mean':[None]*count,'variance':[None]*count,'std':[None]*count}
+        index=point['index']; result=self.voltage_current_results
+        for key in ('voltage','mean','variance','std'):result[key][index]=point[key]
+        panel=self.voltage_current_panel; panel.show_results(result['voltage'],result['mean'],result['std'])
+        panel.save_csv_button.setEnabled(True); panel.save_image_button.setEnabled(True)
+    def stop_voltage_current_measurement(self):
+        if hasattr(self,'voltage_current_job') and self.voltage_current_thread.isRunning():
+            self.voltage_current_job.request_stop(); self.voltage_current_panel.status.setText('停止処理中…')
+    def _voltage_current_finished(self,result,error):
+        # 完了時に最終結果を保持し、保存操作を有効にする。
+        panel=self.voltage_current_panel; panel.run_button.setEnabled(True); panel.stop_button.setEnabled(False)
+        if error:
+            if isinstance(error,InterruptedError):panel.status.setText('測定を停止しました')
+            else:panel.status.setText('測定に失敗しました'); self._error(str(error))
+            return
+        self.voltage_current_results=result
+        panel.show_results(result['voltage'],result['mean'],result['std'])
+        panel.save_csv_button.setEnabled(True); panel.save_image_button.setEnabled(True)
+        panel.status.setText(f'完了: {len(result["voltage"])}点 × {result["repeats"]}回')
+    def save_voltage_current_csv(self):
+        # 保存ボタンを押したときに保存先を選び、測定済み点の統計をCSVに書く。
+        result=self.voltage_current_results
+        if not result:return self._error('保存できる電圧–電流データがありません')
+        default_path=Path(__file__).resolve().parent/'output.csv'
+        path,_=QFileDialog.getSaveFileName(self,'電圧–電流データを保存',str(default_path),'CSV (*.csv)')
+        if not path:return
+        csv_path=Path(path)
+        if csv_path.suffix.lower()!='.csv':csv_path=csv_path.with_suffix('.csv')
+        try:
+            with csv_path.open('w',newline='',encoding='utf-8') as output:
+                writer=csv.writer(output); writer.writerow(['vdiff','mean','var','std'])
+                writer.writerows((x,mean,variance,std) for x,mean,variance,std in zip(result['voltage'],result['mean'],result['variance'],result['std']) if mean is not None)
+            self.voltage_current_panel.status.setText(f'CSVを保存しました: {csv_path.name}')
+        except Exception as error:self._error(str(error))
+    def save_voltage_current_image(self):
+        # 保存ボタンから保存先を選び、現在のライブプロットを画像にする。
+        if not self.voltage_current_results:return self._error('保存できるプロットがありません')
+        default_path=Path(__file__).resolve().parent/'v-i.png'
+        path,_=QFileDialog.getSaveFileName(self,'電圧–電流プロットを保存',str(default_path),'PNG (*.png)')
+        if not path:return
+        image_path=Path(path)
+        if image_path.suffix.lower()!='.png':image_path=image_path.with_suffix('.png')
+        try:
+            self.voltage_current_panel.fig.savefig(image_path,dpi=200,bbox_inches='tight')
+            self.voltage_current_panel.status.setText(f'画像を保存しました: {image_path.name}')
+        except Exception as error:self._error(str(error))
 
     def _start_job(self,fn,callback):
         # ブロッキングする接続処理を別スレッドで動かし、完了後に画面へ戻す。
@@ -78,7 +157,7 @@ class NevClientWindow(QMainWindow):
         def done(res,err):
             self.run_btn.setEnabled(True)
             if err:self.statusBar().showMessage('接続に失敗しました'); self._error(str(err)); return
-            self.statusBar().showMessage(self.address+' に接続しました'); self._log(res); self._refresh_devices(); self.pulse_panel.set_outputs(self.daq.aos); self._refresh_scope_channels()
+            self.statusBar().showMessage(self.address+' に接続しました'); self._log(res); self._refresh_devices(); self.pulse_panel.set_outputs(self.daq.aos); self.voltage_current_panel.set_outputs(self.daq.aos); self._refresh_scope_channels()
         self._start_job(connect,done)
 
     def _refresh_devices(self):
@@ -89,18 +168,38 @@ class NevClientWindow(QMainWindow):
             for i in range(self.scope.N_unions):self.union_combo.addItem(f'Union {i}',i)
 
     def _refresh_scope_channels(self):
-        # NI-Scopeの全チャンネルを掃引タブの計測／表示一覧へ並べる。
-        if not self.scope:return
+        # NI-ScopeとDAQmx AIの全チャンネルを保持し、選択された計測方式の一覧を表示する。
         self.scope_channels=[]
-        for di,d in enumerate(self.scope.device_list):
-            for ch in range(d.N_channels):self.scope_channels.append((di,d,ch))
-        plot_table=self.channel_plot_table; plot_table.setRowCount(len(self.scope_channels))
-        for r,(di,d,ch) in enumerate(self.scope_channels):
+        if self.scope:
+            for di,d in enumerate(self.scope.device_list):
+                for ch in range(d.N_channels):self.scope_channels.append((di,d,ch))
+        self.daqmx_ai_channels=[]
+        if self.daq:
+            for d in self.daq.ais:
+                for ch in range(d.N_data):self.daqmx_ai_channels.append((d,ch))
+        self._select_measurement_source()
+
+    def _select_measurement_source(self,*_args):
+        # 選択方式に応じて計測チャンネル一覧を切り替える。DAQmx側はDAQMXINFOのAI情報を使う。
+        source=self.sweep_panel.measurement_source.currentData()
+        is_daqmx=source=='daqmx'
+        self.sweep_panel.union_label.setVisible(not is_daqmx); self.union_combo.setVisible(not is_daqmx)
+        self.sweep_panel.channel_group.setTitle('DAQmx AIチャンネル（使用・Plot・Offset）' if is_daqmx else 'NI-Scopeチャンネル（使用・Plot・Offset）')
+        if is_daqmx:
+            channels=[('daqmx',d,ch) for d,ch in self.daqmx_ai_channels]
+        else:
+            channels=[('niscope',di,d,ch) for di,d,ch in self.scope_channels]
+        plot_table=self.channel_plot_table; plot_table.setRowCount(len(channels))
+        for r,item in enumerate(channels):
             active=QCheckBox(); active.setChecked(True); plot_table.setCellWidget(r,0,active)
             show=QCheckBox(); show.setChecked(True); show.toggled.connect(self._plot_channel_settings_changed); plot_table.setCellWidget(r,1,show)
-            plot_table.setItem(r,2,QTableWidgetItem(f'{d.name}/CH{ch}'))
+            if is_daqmx:
+                _,d,ch=item; channel_name=f'{d.name}/AI-{ch}'; offset_key=f'plot_offsets/DAQmx/{d.name}/AI-{ch}'
+            else:
+                _,di,d,ch=item; channel_name=f'{d.name}/CH{ch}'; offset_key=f'plot_offsets/{d.name}/CH{ch}'
+            plot_table.setItem(r,2,QTableWidgetItem(channel_name))
             offset=QDoubleSpinBox(); offset.setRange(-10,10); offset.setSingleStep(.0001); offset.setDecimals(4)
-            offset_key=f'plot_offsets/{d.name}/CH{ch}'; offset.setValue(self.plot_offset_settings.value(offset_key,0.0,type=float))
+            offset.setValue(self.plot_offset_settings.value(offset_key,0.0,type=float))
             offset.valueChanged.connect(lambda value,key=offset_key:self.plot_offset_settings.setValue(key,value)); offset.valueChanged.connect(self._plot_channel_settings_changed); plot_table.setCellWidget(r,3,offset)
 
     def open_csv(self):
@@ -223,6 +322,8 @@ class NevClientWindow(QMainWindow):
 
     def start_sweep(self):
         # 掃引・NI-Scope設定をサーバーへ送り、初期待機後にPSAを開始する。
+        if self.sweep_panel.measurement_source.currentData()=='daqmx':
+            return self._error('DAQmx AIチャンネル一覧は表示できますが、AI波形の取得処理は未実装です。現在のスイープ実行にはNI-Scopeを選択してください。')
         if not self.scope or not self.daq or not self.raw:return self._error('接続し、パラメータCSVを読み込んでください')
         try:
             if self.active_set is not None:

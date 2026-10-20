@@ -25,7 +25,9 @@ class SweepPanel(QWidget):
         # 元のParameter Sweeperと同じく、左側に設定、右側に表示と保存を置く。
         super().__init__(parent); root=QVBoxLayout(self); split=QSplitter(Qt.Orientation.Horizontal); root.addWidget(split,1)
         controls=QWidget(); layout=QVBoxLayout(controls); cfg=QGroupBox('スイープ設定'); form=QFormLayout(cfg)
-        self.union=QComboBox(); form.addRow('NI-Scope union',self.union)
+        self.measurement_source=QComboBox(); self.measurement_source.addItem('NI-Scope','niscope'); self.measurement_source.addItem('NI-DAQmx AI','daqmx')
+        form.addRow('計測方式',self.measurement_source)
+        self.union=QComboBox(); self.union_label=QLabel('NI-Scope union'); form.addRow(self.union_label,self.union)
         self.mode=QComboBox(); self.mode.addItems(['NCMODE','BDMODE']); self.parameter=QComboBox(); self.start=_spin(0,100,.001); self.stop=_spin(0,100,.001); self.steps=QSpinBox(); self.steps.setRange(1,1000); self.steps.setValue(40)
         self.error_bar=QCheckBox('標準偏差をエラーバー表示')
         self.direction=QComboBox(); self.direction.addItems(['↓','↑','↓↑','↑↓']); self.initial_delay=_spin(0,100,.001); self.initial_delay.setValue(.5); self.period=_spin(.001,100,.001); self.period.setValue(.25); self.delay=_spin(0,100,.001); self.delay.setValue(.05); self.frequency=QComboBox(); self.frequency.addItem('50 kS/s',50000); self.frequency.addItem('500 kS/s',500000)
@@ -35,7 +37,7 @@ class SweepPanel(QWidget):
         plots=QWidget(); plot_layout=QVBoxLayout(plots)
         x_axis_row=QHBoxLayout(); x_axis_row.addWidget(QLabel('横軸'))
         self.x_axis=QComboBox(); self.x_axis.addItem('掃引パラメータ',-1); x_axis_row.addWidget(self.x_axis,1); plot_layout.addLayout(x_axis_row)
-        channel_group=QGroupBox('NI-Scopeチャンネル（使用・Plot・Offset）'); channel_layout=QVBoxLayout(channel_group)
+        channel_group=QGroupBox('NI-Scopeチャンネル（使用・Plot・Offset）'); self.channel_group=channel_group; channel_layout=QVBoxLayout(channel_group)
         self.channel_plot_table=QTableWidget(0,4); self.channel_plot_table.setHorizontalHeaderLabels(['使用','Plot','チャンネル','Offset (V)']); self.channel_plot_table.horizontalHeader().setSectionResizeMode(2,QHeaderView.ResizeMode.Stretch); self.channel_plot_table.verticalHeader().hide(); self.channel_plot_table.setMaximumHeight(150); channel_layout.addWidget(self.channel_plot_table); plot_layout.addWidget(channel_group)
         self.fig,self.ax,self.canvas,self.plot_toolbar=_plot(plots); self.ax.set_box_aspect(1)
         save_buttons=QHBoxLayout(); self.save_button=QPushButton('取得データをCSV保存'); self.save_image_button=QPushButton('プロット画像保存'); save_buttons.addWidget(self.save_button); save_buttons.addWidget(self.save_image_button); plot_layout.addLayout(save_buttons)
@@ -87,4 +89,5 @@ class PRCPanel(QWidget):
     def __init__(self,parent=None):
         super().__init__(parent); layout=QVBoxLayout(self)
         self.fig,self.ax,self.canvas,self.toolbar=_plot(self)
+
 
