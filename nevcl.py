@@ -75,9 +75,9 @@ class NevClientWindow(QMainWindow):
             segments=[(start.value(),stop.value(),points.value()) for start,stop,points in panel.segments]
             if any(start==stop for start,stop,_ in segments):raise ValueError('各掃引区間の開始値と終了値は異なる値にしてください')
             if not panel.visa_address.text().strip():raise ValueError('Keithley VISAアドレスを入力してください')
-            settings={'host':panel.host.text().strip() or 'localhost','visa_address':panel.visa_address.text().strip(),
+            settings={'visa_address':panel.visa_address.text().strip(),
                 'sweep_channel':sweep_output,'segments':segments,'repeats':panel.repeats.value()}
-            self.voltage_current_thread=QThread(self); self.voltage_current_job=VoltageCurrentJob(settings); self.voltage_current_job.moveToThread(self.voltage_current_thread)
+            self.voltage_current_thread=QThread(self); self.voltage_current_job=VoltageCurrentJob(settings,self.daq); self.voltage_current_job.moveToThread(self.voltage_current_thread)
             self.voltage_current_thread.started.connect(self.voltage_current_job.run); self.voltage_current_job.progress.connect(panel.status.setText)
             self.voltage_current_job.point_updated.connect(self.update_voltage_current_plot)
             self.voltage_current_job.done.connect(self._voltage_current_finished); self.voltage_current_job.done.connect(self.voltage_current_thread.quit)

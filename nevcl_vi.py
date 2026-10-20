@@ -1,5 +1,5 @@
 """電圧–電流測定の画面部品とバックグラウンド測定処理。"""
-import asyncio
+import time
 
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
 from matplotlib.figure import Figure
@@ -33,8 +33,6 @@ class VoltageCurrentPanel(QWidget):
         form = QFormLayout(settings)
         self.visa_address = QLineEdit('TCPIP::157.82.169.219::INSTR')
         form.addRow('Keithley VISA', self.visa_address)
-        self.host = QLineEdit('localhost')
-        form.addRow('NEVサーバー', self.host)
 
         self.sweep_channel = QComboBox()
         form.addRow('掃引出力', self.sweep_channel)
@@ -111,13 +109,13 @@ class VoltageCurrentPanel(QWidget):
             if device.static or not device.analog or device.taskType not in ('AO', 'DAO'):
                 continue
             for channel in range(device.N_data):
-                data = (device.taskType, device.taskNo, channel)
+                data = (device, channel)
                 label = f'{device.name}/{device.taskType}-{channel}'
                 combo.addItem(label, data)
         match = combo.findData(selected) if selected is not None else -1
         if match < 0:
             match = next(
-                (i for i in range(combo.count()) if combo.itemData(i)[2] == 52),
+                (i for i in range(combo.count()) if combo.itemData(i)[1] == 52),
                 0 if combo.count() else -1,
             )
         if match >= 0:
@@ -145,9 +143,10 @@ class VoltageCurrentJob(QObject):
     point_updated = pyqtSignal(object)
     done = pyqtSignal(object, object)
 
-    def __init__(self, settings):
+    def __init__(self, settings, daq):
         super().__init__()
         self.settings = settings
+        self.daq = daq
         self.stop_requested = False
 
     def request_stop(self):
@@ -155,18 +154,16 @@ class VoltageCurrentJob(QObject):
 
     def run(self):
         try:
-            self.done.emit(asyncio.run(self._measure()), None)
+            self.done.emit(self._measure(), None)
         except Exception as error:
             self.done.emit(None, error)
 
-    async def _measure(self):
-        import telnetlib3
+    def _measure(self):
         import pyvisa
 
         settings = self.settings
-        reader = writer = instrument = manager = None
+        instrument = manager = None
         try:
-            reader, writer = await telnetlib3.open_connection(settings['host'], 9000)
             # viplot.pyと同じく既定のVISA実装を使う（NI-VISA等とPyVISA-Pyの両方に対応）。
             try:
                 manager = pyvisa.ResourceManager()
@@ -178,26 +175,18 @@ class VoltageCurrentJob(QObject):
             instrument = manager.open_resource(settings['visa_address'])
             instrument.write('smua.source.output = smua.OUTPUT_ON')
 
-            async def send(output, value):
-                task_type, task_no, channel = output
-                commands = (
-                    f'SET AO {task_no} {channel}',
-                    f'{value:.12g} #OK',
-                    'RUN AO *',
-                )
-                for command in commands:
-                    writer.write(command + '\n')
-                    await writer.drain()
-                    try:
-                        await asyncio.wait_for(reader.read(1024), timeout=5)
-                    except asyncio.TimeoutError as error:
-                        raise TimeoutError(f'NEVサーバーの応答がありません: {command}') from error
-                    await asyncio.sleep(.5)
-                    if self.stop_requested:
-                        raise InterruptedError('測定を停止しました')
+            def send(output, value):
+                device, channel = output
+                self.daq.set_ch(device, channel, [float(value)])
+                response = self.daq.update([device])
+                if response is None:
+                    raise RuntimeError(f'{device.name}/AO-{channel} の出力更新に失敗しました')
+                time.sleep(.5)
+                if self.stop_requested:
+                    raise InterruptedError('測定を停止しました')
 
             segments = settings['segments']
-            await send(settings['sweep_channel'], segments[0][0])
+            send(settings['sweep_channel'], segments[0][0])
 
             sweep_voltages = []
             for segment_start, segment_stop, segment_points in segments:
@@ -216,7 +205,7 @@ class VoltageCurrentJob(QObject):
                 for index, voltage in enumerate(sweep_voltages):
                     if self.stop_requested:
                         raise InterruptedError('測定を停止しました')
-                    await send(settings['sweep_channel'], voltage)
+                    send(settings['sweep_channel'], voltage)
                     reading = instrument.query('print(smua.measure.i())').strip()
                     measurements[index].append(float(reading))
                     point_mean = sum(measurements[index]) / len(measurements[index])
@@ -258,10 +247,5 @@ class VoltageCurrentJob(QObject):
             if manager is not None:
                 try:
                     manager.close()
-                except Exception:
-                    pass
-            if writer is not None:
-                try:
-                    writer.close()
                 except Exception:
                     pass
