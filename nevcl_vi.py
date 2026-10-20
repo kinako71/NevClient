@@ -130,7 +130,10 @@ class VoltageCurrentPanel(QWidget):
             x = [voltage[i] for i in valid]
             y = [mean[i] for i in valid]
             yerr = [std[i] or 0 for i in valid]
-            self.ax.errorbar(x, y, yerr=yerr, capsize=3)
+            self.ax.errorbar(
+                x, y, xerr=None, yerr=yerr, fmt='o', ecolor='#333333',
+                elinewidth=1.5, capsize=4, capthick=1.5, markersize=4,
+            )
         self.ax.set_xlabel('Vdiff [V]')
         self.ax.set_ylabel('Istim [A]')
         self.ax.set_box_aspect(1)
