@@ -180,11 +180,10 @@ class VoltageCurrentJob(QObject):
 
             async def send(output, value):
                 task_type, task_no, channel = output
-                dynamic_type = 'D' + task_type.removeprefix('D')
                 commands = (
-                    f'SET {dynamic_type} {task_no} {channel}',
+                    f'SET AO {task_no} {channel}',
                     f'{value:.12g} #OK',
-                    f'RUN {dynamic_type} *',
+                    'RUN AO *',
                 )
                 for command in commands:
                     writer.write(command + '\n')
