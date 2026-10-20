@@ -167,7 +167,14 @@ class VoltageCurrentJob(QObject):
         reader = writer = instrument = manager = None
         try:
             reader, writer = await telnetlib3.open_connection(settings['host'], 9000)
-            manager = pyvisa.ResourceManager()
+            # viplot.pyと同じく既定のVISA実装を使う（NI-VISA等とPyVISA-Pyの両方に対応）。
+            try:
+                manager = pyvisa.ResourceManager()
+            except Exception as error:
+                raise RuntimeError(
+                    'PyVISAの通信バックエンドを読み込めません。'
+                    'NI-VISAなどのIVI実装、またはPyVISA-Pyが実行環境にあるか確認してください。'
+                ) from error
             instrument = manager.open_resource(settings['visa_address'])
             instrument.write('smua.source.output = smua.OUTPUT_ON')
 
