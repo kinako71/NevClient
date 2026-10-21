@@ -214,8 +214,8 @@ class PulseMeasurementJob(QObject):
             raise ValueError('遅延とパルス幅の合計が計測時間を超えています')
         # PULSEはAO task番号と物理AO番号を受け取る。
         self.progress.emit('PULSE計測を設定中…')
-        # SET PULSEで設定モードに入り、仕様どおり数値行ごとのACKを待つ。
-        self.tcp.send(f'SET PULSE {self.device.taskNo} {self.channel}')
+        # SET PULSE自体のACKも受け取り、以降の応答がずれないようにする。
+        self._send_and_wait_ok(f'SET PULSE {self.device.taskNo} {self.channel}')
         self._send_and_wait_ok(f'{self.frequency} {self.duration:.12g}')
         self._send_and_wait_ok(
             f'{self.delay:.12g} {self.width:.12g} {self.amplitude:.12g}'
