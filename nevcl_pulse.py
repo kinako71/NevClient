@@ -286,5 +286,8 @@ class PulseMeasurementJob(QObject):
         return {
             'samples': samples,
             'duration': self.duration,
+            'delay': self.delay,
+            'width': self.width,
+            'amplitude': self.amplitude,
             'configuration': response[header_index + 1] if len(response) > header_index + 1 else '',
         }

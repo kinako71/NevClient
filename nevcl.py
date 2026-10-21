@@ -538,9 +538,13 @@ class NevClientWindow(QMainWindow):
         if Path(path).suffix.lower()!='.csv':path += '.csv'
         try:
             with open(path,'w',newline='',encoding='utf-8') as output:
-                writer=csv.writer(output); writer.writerow(['run','time (s)','AO voltage (V)','AI voltage (V)'])
+                writer=csv.writer(output); writer.writerow([
+                    'run','time (s)','AO voltage (V)','AI voltage (V)',
+                    'delay (ms)','width (ms)','amplitude (mV)'])
                 for run_index, run in enumerate(self.pulse_results, 1):
-                    writer.writerows((run_index, *sample) for sample in run['samples'])
+                    writer.writerows(
+                        (run_index, *sample, run['delay'], run['width'], run['amplitude'])
+                        for sample in run['samples'])
             self.pulse_panel.status.setText(f'CSVを保存しました: {Path(path).name}')
         except Exception as error:self._error(str(error))
 
