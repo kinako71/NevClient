@@ -1,6 +1,6 @@
-"""PSAスイーパーとPulse Stimulus、プロットの画面部品。
+"""PSAスイーパーとPRCプロットの画面部品。
 
-掃引条件と取得チャンネル設定は SweepPanel、刺激と結果表示は PulseStimulusPanel にある。
+掃引条件と取得チャンネル設定は SweepPanel にある。
 データ取得や再描画の処理本体は親の nevcl.py にある。
 """
 from matplotlib.figure import Figure
@@ -42,47 +42,6 @@ class SweepPanel(QWidget):
         self.fig,self.ax,self.canvas,self.plot_toolbar=_plot(plots); self.ax.set_box_aspect(1)
         save_buttons=QHBoxLayout(); self.save_button=QPushButton('取得データをCSV保存'); self.save_image_button=QPushButton('プロット画像保存'); save_buttons.addWidget(self.save_button); save_buttons.addWidget(self.save_image_button); plot_layout.addLayout(save_buttons)
         split.addWidget(plots); split.setSizes([380,700])
-
-class PulseStimulusPanel(QWidget):
-    """上段に刺激波形、下段にPSA結果プロットを表示するタブ。"""
-    def __init__(self,parent=None):
-        super().__init__(parent); layout=QVBoxLayout(self); split=QSplitter(Qt.Orientation.Vertical); layout.addWidget(split,1)
-        upper=QSplitter(Qt.Orientation.Horizontal); split.addWidget(upper)
-        settings=QGroupBox('Pulse Stimulus'); settings_layout=QVBoxLayout(settings); form=QFormLayout()
-        self.output=QComboBox(); form.addRow('出力チャンネル',self.output)
-        self.dt=_spin(.001,10,.001,3); self.dt.setValue(.01); self.duration=_spin(.01,1000,.1,2); self.duration.setValue(20)
-        timing=QHBoxLayout(); timing.addWidget(QLabel('dt (ms)')); timing.addWidget(self.dt); timing.addWidget(QLabel('T (ms)')); timing.addWidget(self.duration); form.addRow('時間設定',timing); settings_layout.addLayout(form)
-        pulse_row=QHBoxLayout(); self.pulses=[]
-        for index,(enabled,delay,width,amplitude) in enumerate(((True,5,1,100),(False,15,1,100)),1):
-            group=QGroupBox(f'Pulse {index}'); pulse_form=QFormLayout(group); active=QCheckBox('有効'); active.setChecked(enabled)
-            delay_spin=_spin(0,1000,.01,2); delay_spin.setValue(delay); width_spin=_spin(.01,1000,.01,2); width_spin.setValue(width); amp_spin=_spin(-1000,1000,1,1); amp_spin.setValue(amplitude)
-            pulse_form.addRow(active); pulse_form.addRow('Delay (ms)',delay_spin); pulse_form.addRow('Width (ms)',width_spin); pulse_form.addRow('Amplitude (mV)',amp_spin); pulse_row.addWidget(group,1); self.pulses.append((active,delay_spin,width_spin,amp_spin))
-        settings_layout.addLayout(pulse_row); self.fire_button=QPushButton('刺激を出力'); settings_layout.addWidget(self.fire_button); upper.addWidget(settings)
-        stimulus_plot=QWidget(); stimulus_layout=QVBoxLayout(stimulus_plot); self.stim_fig,self.stim_ax,self.stim_canvas,self.stim_toolbar=_plot(stimulus_plot); self.stim_canvas.setMinimumHeight(160); upper.addWidget(stimulus_plot); upper.setSizes([440,650])
-        results=QWidget(); results_layout=QVBoxLayout(results); self.fig,self.ax,self.canvas,self.plot_toolbar=_plot(results); self.ax.set_box_aspect(1)
-        save_buttons=QHBoxLayout(); self.save_button=QPushButton('取得データをCSV保存'); self.save_image_button=QPushButton('プロット画像保存'); save_buttons.addWidget(self.save_button); save_buttons.addWidget(self.save_image_button); results_layout.addLayout(save_buttons); split.addWidget(results); split.setSizes([440,400])
-        self.dt.valueChanged.connect(self.update_preview); self.duration.valueChanged.connect(self.update_preview)
-        for active,delay_spin,width_spin,amp_spin in self.pulses:
-            active.toggled.connect(self.update_preview); delay_spin.valueChanged.connect(self.update_preview); width_spin.valueChanged.connect(self.update_preview); amp_spin.valueChanged.connect(self.update_preview)
-        self.update_preview()
-
-    def set_outputs(self,devices):
-        current=self.output.currentData(); self.output.clear()
-        for device in devices:
-            if not device.static:
-                for channel in range(device.N_data):self.output.addItem(f'{device.name}/AO-{channel}',(device,channel))
-        index=self.output.findData(current)
-        if index>=0:self.output.setCurrentIndex(index)
-
-    def update_preview(self,*_args):
-        dt=self.dt.value(); duration=self.duration.value(); count=max(2,int(duration/dt)+1); time=[i*dt for i in range(count)]; values=[0.0]*count
-        for active,delay,width,amplitude in self.pulses:
-            if active.isChecked():
-                start=int(delay.value()/dt); length=int(width.value()/dt)
-                for i in range(start,min(count,start+length)):values[i]+=amplitude.value()
-        self.waveform=values; self.stim_ax.clear(); self.stim_ax.grid(True); self.stim_ax.step(time,values,where='post')
-        self.stim_ax.set_xlim(0,duration); self.stim_ax.set_xlabel('Time (ms)'); self.stim_ax.set_ylabel('Amplitude (mV)')
-        low=min(values); high=max(values); margin=max((high-low)*.1,1); self.stim_ax.set_ylim(low-margin,high+margin); self.stim_canvas.draw_idle()
 
 class PRCPanel(QWidget):
     """PRC表示用の空のプロット領域。"""

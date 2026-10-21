@@ -16,7 +16,8 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
 import nevcl_tcp, nevcl_daqmx, nevcl_niscope
 from nevcl_csvif import CsvParameterFile
 from nevcl_param import ATTRS, ParameterPanel
-from nevcl_psa import SweepPanel, PulseStimulusPanel, PRCPanel
+from nevcl_psa import SweepPanel, PRCPanel
+from nevcl_pulse import PulseStimulusPanel, PulseMeasurementJob
 from nevcl_vi import VoltageCurrentPanel, VoltageCurrentJob
 
 ATTRS=list(ATTRS)
@@ -37,7 +38,7 @@ class NevClientWindow(QMainWindow):
         # チャンネルごとのプロットオフセットを次回起動時にも読み込めるよう保存する。
         self.plot_offset_settings=QSettings('KohnoLab','NEVClientPyQt')
         self.address=address; self.tcp=None; self.daq=None; self.scope=None; self.csv_model=None; self.csv_path=None; self.raw=[]; self.cols={}; self.pset_cols=[]; self.active_set=None
-        self.voltage_current_results=None
+        self.voltage_current_results=None; self.pulse_result=None; self.pulse_active=False
         self.sweep_active=False; self.sweep_bookmark=0; self.sweep_dirs=[]; self.psa_data=[]; self.channel_rows=[]; self.scope_channels=[]; self.daqmx_ai_channels=[]; self.sweep_channel_info=[]; self.sweep_data=[]; self.sweep_param_values=[]; self.active_stim_target=None
         self._build_ui(); self.timer=QTimer(self); self.timer.setInterval(400); self.timer.timeout.connect(self.poll_sweep)
         self.statusBar().showMessage(f'{address}:9000 | 未接続')
@@ -55,7 +56,7 @@ class NevClientWindow(QMainWindow):
         self.tabs=QTabWidget(); split.addWidget(self.tabs); split.setSizes([570,880])
         self.sweep_panel=SweepPanel(); self.fig=self.sweep_panel.fig; self.ax=self.sweep_panel.ax; self.canvas=self.sweep_panel.canvas; self.sweep_mode=self.sweep_panel.mode; self.sweep_param=self.sweep_panel.parameter; self.sweep_start=self.sweep_panel.start; self.sweep_stop=self.sweep_panel.stop; self.sweep_steps=self.sweep_panel.steps; self.sweep_dir=self.sweep_panel.direction; self.idelay=self.sweep_panel.initial_delay; self.period=self.sweep_panel.period; self.delay=self.sweep_panel.delay; self.frequency=self.sweep_panel.frequency; self.run_btn=self.sweep_panel.run_button; self.stop_btn=self.sweep_panel.stop_button; self.union_combo=self.sweep_panel.union; self.channel_plot_table=self.sweep_panel.channel_plot_table; self.sweep_x_axis=self.sweep_panel.x_axis
         self.error_bar=self.sweep_panel.error_bar; self.run_btn.clicked.connect(self.start_sweep); self.stop_btn.clicked.connect(self.stop_sweep); self.sweep_x_axis.currentIndexChanged.connect(self._plot_channel_settings_changed); self.sweep_panel.measurement_source.currentIndexChanged.connect(self._select_measurement_source); self.sweep_panel.save_button.clicked.connect(self.save_psa_data); self.sweep_panel.save_image_button.clicked.connect(self.save_psa_plot_image); self.sweep_mode.currentTextChanged.connect(self._select_sweep_mode); self.tabs.addTab(self.sweep_panel,'Parameter Sweeper')
-        self.pulse_panel=PulseStimulusPanel(); self.pulse_panel.fire_button.clicked.connect(self.fire_pulse_stimulus); self.pulse_panel.save_button.clicked.connect(self.save_psa_data); self.pulse_panel.save_image_button.clicked.connect(self.save_psa_plot_image); self.tabs.addTab(self.pulse_panel,'Pulse Stimulus')
+        self.pulse_panel=PulseStimulusPanel(); self.pulse_panel.fire_button.clicked.connect(self.start_pulse_measurement); self.pulse_panel.save_button.clicked.connect(self.save_pulse_data); self.pulse_panel.save_image_button.clicked.connect(self.save_pulse_plot_image); self.tabs.addTab(self.pulse_panel,'Pulse Stimulus')
         self.prc_panel=PRCPanel(); self.tabs.addTab(self.prc_panel,'PRC')
         self.voltage_current_panel=VoltageCurrentPanel(); self.tabs.addTab(self.voltage_current_panel,'電圧-電流')
         self._setup_voltage_current_panel()
@@ -70,6 +71,7 @@ class NevClientWindow(QMainWindow):
     def start_voltage_current_measurement(self):
         # viplot.pyと同じ範囲・出力チャンネルの測定をワーカースレッドで開始する。
         panel=self.voltage_current_panel
+        if self.pulse_active:return self._error('PULSE計測中は電圧–電流計測を開始できません')
         try:
             sweep_output=panel.sweep_channel.currentData()
             if sweep_output is None:raise ValueError('DAQmxの動的AOチャンネルを選択してください。先にサーバーへ接続してください。')
@@ -301,6 +303,7 @@ class NevClientWindow(QMainWindow):
 
     def drive_outputs(self):
         # 選択セットの全パラメータ値をDAQmx出力へ反映する。
+        if self.pulse_active:return self._error('PULSE計測中はDAQmx出力を更新できません')
         if not self.daq or not self.raw or self.active_set is None:return self._error('接続してCSVセットを選択してください')
         try:
             pcol=self.pset_cols[self.active_set]; labelcol=self.cols['LABEL']; devcol=self.cols['DEV']; chcol=self.cols['CH']
@@ -322,12 +325,14 @@ class NevClientWindow(QMainWindow):
         except Exception as e:self._error(str(e))
     def zero_clear(self):
         # DAQmx出力をゼロクリアする。
+        if self.pulse_active:return self._error('PULSE計測中はDAQmx出力を更新できません')
         if not self.daq:return self._error('先に接続してください')
         try:self.daq.zeroclear(); self._log('DAQmx zero clear completed')
         except Exception as e:self._error(str(e))
 
     def start_sweep(self):
         # 掃引・NI-Scope設定をサーバーへ送り、初期待機後にPSAを開始する。
+        if self.pulse_active:return self._error('PULSE計測中はPSAを開始できません')
         if self.sweep_panel.measurement_source.currentData()=='daqmx':
             return self._error('DAQmx AIチャンネル一覧は表示できますが、AI波形の取得処理は未実装です。現在のスイープ実行にはNI-Scopeを選択してください。')
         if not self.scope or not self.daq or not self.raw:return self._error('接続し、パラメータCSVを読み込んでください')
@@ -442,7 +447,7 @@ class NevClientWindow(QMainWindow):
         if x_index is None or x_index<0 or x_index>=len(self.sweep_data):x_index=-1
         x_label=self.sweep_label if x_index<0 else self.sweep_channel_info[x_index]['name']
         colors=['#ff0000','#0000ff','#00aa00','#ff00ff','#cc9900','#00aaaa','#883355','#335588']
-        for ax in (self.ax,self.pulse_panel.ax):
+        for ax in (self.ax,):
             ax.clear(); ax.set_box_aspect(1); ax.grid(True)
             x_source=self.sweep_data[x_index] if x_index>=0 else None
             for i,series in enumerate(self.sweep_data):
@@ -464,26 +469,79 @@ class NevClientWindow(QMainWindow):
                     else:ax.plot(x,ys,label=name,color=color)
             if self.sweep_channel_info:ax.legend(loc='best')
             ax.set_xlabel(x_label); ax.set_ylabel('Voltage (V)')
-        self.canvas.draw(); self.pulse_panel.canvas.draw_idle()
+        self.canvas.draw()
 
-    def fire_pulse_stimulus(self):
-        """Pulse Stimulusタブで設定した波形を選択中のDAQmx出力へ送る。"""
-        if not self.daq:return self._error('先にDAQmx機器へ接続してください')
+    def start_pulse_measurement(self):
+        """指定条件をサーバーへ送り、同期パルス計測と結果取得を実行する。"""
+        if not self.tcp or not self.daq:return self._error('先にDAQmx機器へ接続してください')
+        if self.sweep_active:return self._error('PSA実行中はPULSE計測を開始できません')
+        ai_task=next((device for device in self.daq.ais if device.taskNo==0),None)
+        if ai_task is None or ai_task.N_data < 1:
+            return self._error('DAQMXINFOにAI task 0のチャンネルがありません')
         selected=self.pulse_panel.output.currentData()
-        if not selected:return self._error('出力チャンネルがありません')
-        dev,ch=selected
+        if not selected:return self._error('DAQMXINFOにAO出力チャンネルがありません')
+        device,channel=selected
         try:
-            if self.active_stim_target and self.active_stim_target!=(dev,ch):
-                old_dev,old_ch=self.active_stim_target; old_dev.set_stim(old_ch,[0]); self.daq.set_dao_data(old_dev,0,-1,True); self.daq.run_dao(old_dev)
-            dt_ms=self.pulse_panel.dt.value(); duration_ms=self.pulse_panel.duration.value(); n=max(2,int(duration_ms/dt_ms)+1)
-            dev.L_data=n; dev.freq=1000.0/dt_ms
-            if self.daq.set_dao_cfg(dev) is None:raise RuntimeError('DAQmx波形設定に失敗しました')
-            for channel in range(dev.N_data):dev.set_stim(channel,[0.0]*n)
-            dev.set_stim(ch,[value/1000.0 for value in self.pulse_panel.waveform])
-            if self.daq.set_dao_data(dev,0,-1,True) is None:raise RuntimeError('DAQmx波形データ送信に失敗しました')
-            if self.daq.run_dao(dev) is None:raise RuntimeError('DAQmx波形出力に失敗しました')
-            self.active_stim_target=(dev,ch); self._log(f'Pulse stimulus output: {dev.name}/AO-{ch}, {n} samples at {dev.freq:g} S/s')
-        except Exception as e:self._error(str(e))
+            self.pulse_result=None
+            self.pulse_active=True
+            self.pulse_panel.save_button.setEnabled(False); self.pulse_panel.save_image_button.setEnabled(False)
+            self.pulse_panel.show_results([])
+            self.pulse_panel.status.setText('PULSE設定を送信し、AI同期計測中…')
+            self.pulse_panel.fire_button.setEnabled(False)
+            self.pulse_thread=QThread(self)
+            self.pulse_job=PulseMeasurementJob(self.tcp,device,channel,
+                1000.0/self.pulse_panel.dt.value(),self.pulse_panel.duration.value()/1000,
+                self.pulse_panel.pulse_delay.value(),self.pulse_panel.pulse_width.value(),
+                self.pulse_panel.pulse_amplitude.value())
+            self.pulse_job.moveToThread(self.pulse_thread)
+            self.pulse_thread.started.connect(self.pulse_job.run)
+            self.pulse_job.done.connect(self._pulse_measurement_finished)
+            self.pulse_job.done.connect(self.pulse_thread.quit)
+            self.pulse_thread.finished.connect(self.pulse_job.deleteLater)
+            self.pulse_thread.finished.connect(self.pulse_thread.deleteLater)
+            self.pulse_thread.start()
+        except Exception as error:
+            self.pulse_active=False
+            self.pulse_panel.fire_button.setEnabled(True)
+            self._error(str(error))
+
+    def _pulse_measurement_finished(self,result,error):
+        self.pulse_active=False
+        self.pulse_panel.fire_button.setEnabled(True)
+        if error:
+            self.pulse_panel.status.setText('PULSE計測に失敗しました')
+            self._error(str(error)); return
+        self.pulse_result=result
+        samples=result['samples']; self.pulse_panel.show_results(samples)
+        self.pulse_panel.save_button.setEnabled(bool(samples)); self.pulse_panel.save_image_button.setEnabled(bool(samples))
+        self.pulse_panel.status.setText(f'計測完了: {len(samples)} samples')
+        self._log(f'PULSE取得完了: {len(samples)} samples ({self.pulse_panel.output.currentText()})')
+
+    def save_pulse_data(self):
+        """最後に取得したPULSE波形をCSVへ保存する。"""
+        if not self.pulse_result:return self._error('保存できるPULSEデータがありません')
+        client_dir=Path(__file__).resolve().parent
+        path,_=QFileDialog.getSaveFileName(self,'PULSEデータ保存',str(client_dir/'output.csv'),'CSV (*.csv)')
+        if not path:return
+        if Path(path).suffix.lower()!='.csv':path += '.csv'
+        try:
+            with open(path,'w',newline='',encoding='utf-8') as output:
+                writer=csv.writer(output); writer.writerow(['time (s)','AO voltage (V)','AI voltage (V)'])
+                writer.writerows(self.pulse_result['samples'])
+            self.pulse_panel.status.setText(f'CSVを保存しました: {Path(path).name}')
+        except Exception as error:self._error(str(error))
+
+    def save_pulse_plot_image(self):
+        """PULSE結果グラフを画像ファイルとして保存する。"""
+        if not self.pulse_result:return self._error('保存できるPULSEプロットがありません')
+        client_dir=Path(__file__).resolve().parent
+        path,_=QFileDialog.getSaveFileName(self,'PULSEプロット画像保存',str(client_dir/'pulse.png'),'PNG画像 (*.png)')
+        if not path:return
+        if Path(path).suffix.lower()!='.png':path += '.png'
+        try:
+            self.pulse_panel.fig.savefig(path,dpi=200,bbox_inches='tight')
+            self.pulse_panel.status.setText(f'画像を保存しました: {Path(path).name}')
+        except Exception as error:self._error(str(error))
 
     def save_psa_data(self):
         # 掃引データと計測条件・チャンネル情報をCSV形式で保存する。
