@@ -192,33 +192,54 @@ class PRCMeasurementJob(QObject):
             response = self.tcp.recv(timeout=30)
             if not response:
                 raise RuntimeError('GET PRC STATの応答がありません')
-            stat_line = next(
-                (line.strip() for line in response
-                 if re.search(r'#(?:GET)?PRCSTAT\b', line, re.IGNORECASE)),
+            stat_index = next(
+                (index for index, line in enumerate(response)
+                 if re.search(r'#PRCSTAT\b', line, re.IGNORECASE)),
                 None,
             )
-            if stat_line is None:
+            if stat_index is None:
                 raise RuntimeError(f'GET PRC STAT応答の形式が不正です: {response[:3]}')
-            fields = stat_line.split()
+            stat_line = response[stat_index].strip()
+            body = re.sub(
+                r'^#(?:(?:GET)?PRCSTAT|PSASTAT)\b', '', stat_line,
+                flags=re.IGNORECASE,
+            ).strip()
+            if not body and stat_index + 1 < len(response):
+                body = response[stat_index + 1].strip()
+                stat_line = f'{stat_line} {body}'
+            fields = body.split()
             numbers = []
-            for field in fields[1:]:
+            for field in fields:
                 if re.fullmatch(r'[-+]?\d+', field):
                     numbers.append(int(field))
             if not numbers:
                 raise RuntimeError(f'GET PRC STATからポイント数を読めません: {stat_line}')
-            readable_points = numbers[-1]
+            # #PRCSTATの次行は「読取可能点数 現在位相 状態 [エラー]」。
+            readable_points = numbers[0]
+            try:
+                current_phase = float(fields[1])
+            except (IndexError, ValueError):
+                current_phase = 0.0
             state = next(
-                (field.upper() for field in fields[1:]
+                (field.upper() for field in fields
                  if re.search(r'[A-Za-z]', field)),
                 '',
             )
             self.progress.emit(
-                f'PRC計測中: {state or "状態確認中"} / {readable_points}点取得可能'
+                f'PRC計測中: {state or "状態確認中"} / '
+                f'{readable_points}/{expected_points}点取得可能 '
+                f'(位相 {current_phase:g} ms)'
             )
             if state in {'ERROR', 'FAILED', 'ABORTED'}:
                 raise RuntimeError(f'PRC計測が失敗しました: {stat_line}')
-            if state and state not in {'RUNNING', 'BUSY', 'MEASURING', 'ACTIVE'}:
+            if state == 'UNKNOWN':
+                raise RuntimeError(f'サーバーがPRC状態を判定できません: {stat_line}')
+            if state == 'COMPLETE':
                 break
+            if state in {'IDLE', 'CONFIGURED'}:
+                if readable_points >= expected_points:
+                    break
+                raise RuntimeError(f'PRC計測が完了状態になりましたが、点数が不足しています: {stat_line}')
             if not state and readable_points >= expected_points:
                 break
             time.sleep(.25)
@@ -230,18 +251,55 @@ class PRCMeasurementJob(QObject):
         response = self.tcp.recv(timeout=120)
         if not response:
             raise RuntimeError('GET PRC DATAの応答がありません')
+        data_index = next(
+            (index for index, line in enumerate(response)
+             if re.search(r'#PRCDATA\b', line, re.IGNORECASE)),
+            None,
+        )
+        if data_index is None:
+            raise RuntimeError(f'GET PRC DATA応答に#PRCDATAタグがありません: {response[:3]}')
+        data_header = response[data_index].strip().split()
+        requested_count = None
+        if len(data_header) >= 3:
+            try:
+                first_point, last_point = int(data_header[1]), int(data_header[2])
+                if last_point >= first_point:
+                    requested_count = last_point - first_point + 1
+            except ValueError:
+                pass
         rows = []
-        for line in response:
-            cleaned = re.sub(r'[\[\]()]+', ' ', line.strip())
-            fields = re.split(r'[\s,]+', cleaned)
-            if len(fields) != 2:
+        pending_phase = None
+        for line in response[data_index + 1:]:
+            content = line.strip()
+            if not content or content.startswith('#'):
+                continue
+            # PRCDATAは位相のスカラー行と[PRC値]の行が交互に返る。
+            values = re.findall(r'[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?', content)
+            if not values:
                 continue
             try:
-                rows.append(tuple(float(field) for field in fields))
+                parsed = [float(value) for value in values]
             except ValueError:
                 continue
+            is_bracketed_value = content.startswith('[') and content.endswith(']')
+            if is_bracketed_value:
+                if pending_phase is not None:
+                    rows.append((pending_phase, parsed[0]))
+                    pending_phase = None
+                continue
+            if len(parsed) >= 2:
+                rows.append((parsed[0], parsed[1]))
+            elif pending_phase is None:
+                pending_phase = parsed[0]
+            else:
+                rows.append((pending_phase, parsed[0]))
+                pending_phase = None
         if not rows:
             raise RuntimeError(f'GET PRC DATA応答に2列の結果行がありません: {response[:3]}')
+        if requested_count is not None and len(rows) != requested_count:
+            raise RuntimeError(
+                f'#PRCDATAは{requested_count}点の指定ですが、{len(rows)}点を読み取りました'
+            )
         if readable_points and len(rows) < readable_points:
             raise RuntimeError(
                 f'GET PRC STATは{readable_points}点ですが、DATAは{len(rows)}点でした'
