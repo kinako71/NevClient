@@ -199,7 +199,8 @@ class PulseMeasurementJob(QObject):
             self.done.emit(None, error)
 
     def _send_and_wait_ok(self, command):
-        self.tcp.send(command)
+        # ncでEnterを押した場合と同じく、コマンド行の終端改行を送る。
+        self.tcp.send(command.rstrip('\r\n') + '\n')
         self.progress.emit(f'サーバー応答待ち: {command}')
         response = self.tcp.recv(timeout=max(30, self.duration + 30))
         if response is None:
@@ -224,7 +225,7 @@ class PulseMeasurementJob(QObject):
         self._send_and_wait_ok('RUN PULSE')
 
         self.progress.emit('GET PULSEの応答待ち…')
-        self.tcp.send('GET PULSE')
+        self.tcp.send('GET PULSE\n')
         response = self.tcp.recv(timeout=max(30, self.duration + 30))
         if not response:
             raise RuntimeError('GET PULSEの応答がありません')
