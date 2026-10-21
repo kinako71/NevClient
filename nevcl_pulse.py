@@ -177,22 +177,25 @@ class PulseStimulusPanel(QWidget):
         self.ax.clear()
         self.ax.grid(True)
         palette = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f']
+        visible_duration_ms = self.duration.value()
         for run_index, run in enumerate(runs):
             samples = run['samples']
             if not samples:
                 continue
-            times = [row[0] for row in samples]
+            times = [row[0] * 1000 for row in samples]
             color = palette[run_index % len(palette)]
-            suffix = f' (run {run_index + 1})' if len(runs) > 1 else ''
+            run_label = f'run {run_index + 1}'
+            visible_duration_ms = max(visible_duration_ms, run.get('duration', 0) * 1000)
             if self.show_ao.isChecked():
                 self.ax.plot(times, [row[1] for row in samples], color=color,
-                             label='AO voltage' + suffix)
+                             label=run_label)
             if self.show_ai.isChecked():
                 self.ax.plot(times, [row[2] for row in samples], color=color,
-                             linestyle='--', label='AI voltage' + suffix)
+                             linestyle='--', label=run_label if not self.show_ao.isChecked() else '_nolegend_')
         if self.ax.lines:
             self.ax.legend(loc='best')
-        self.ax.set_xlabel('Time (s)')
+        self.ax.set_xlim(0, visible_duration_ms)
+        self.ax.set_xlabel('Time (ms)')
         self.ax.set_ylabel('Voltage (V)')
         self.fig.tight_layout()
         self.canvas.draw_idle()
@@ -280,4 +283,8 @@ class PulseMeasurementJob(QObject):
             samples = []
         elif len(samples) > expected_count:
             samples = samples[-expected_count:]
-        return {'samples': samples, 'configuration': response[header_index + 1] if len(response) > header_index + 1 else ''}
+        return {
+            'samples': samples,
+            'duration': self.duration,
+            'configuration': response[header_index + 1] if len(response) > header_index + 1 else '',
+        }

@@ -56,7 +56,7 @@ class NevClientWindow(QMainWindow):
         self.tabs=QTabWidget(); split.addWidget(self.tabs); split.setSizes([570,880])
         self.sweep_panel=SweepPanel(); self.fig=self.sweep_panel.fig; self.ax=self.sweep_panel.ax; self.canvas=self.sweep_panel.canvas; self.sweep_mode=self.sweep_panel.mode; self.sweep_param=self.sweep_panel.parameter; self.sweep_start=self.sweep_panel.start; self.sweep_stop=self.sweep_panel.stop; self.sweep_steps=self.sweep_panel.steps; self.sweep_dir=self.sweep_panel.direction; self.idelay=self.sweep_panel.initial_delay; self.period=self.sweep_panel.period; self.delay=self.sweep_panel.delay; self.frequency=self.sweep_panel.frequency; self.run_btn=self.sweep_panel.run_button; self.stop_btn=self.sweep_panel.stop_button; self.union_combo=self.sweep_panel.union; self.channel_plot_table=self.sweep_panel.channel_plot_table; self.sweep_x_axis=self.sweep_panel.x_axis
         self.error_bar=self.sweep_panel.error_bar; self.run_btn.clicked.connect(self.start_sweep); self.stop_btn.clicked.connect(self.stop_sweep); self.sweep_x_axis.currentIndexChanged.connect(self._plot_channel_settings_changed); self.sweep_panel.measurement_source.currentIndexChanged.connect(self._select_measurement_source); self.sweep_panel.save_button.clicked.connect(self.save_psa_data); self.sweep_panel.save_image_button.clicked.connect(self.save_psa_plot_image); self.sweep_mode.currentTextChanged.connect(self._select_sweep_mode); self.tabs.addTab(self.sweep_panel,'Parameter Sweeper')
-        self.pulse_panel=PulseStimulusPanel(); self.pulse_panel.fire_button.clicked.connect(self.start_pulse_measurement); self.pulse_panel.save_button.clicked.connect(self.save_pulse_data); self.pulse_panel.save_image_button.clicked.connect(self.save_pulse_plot_image); self.pulse_panel.reset_button.clicked.connect(self.reset_pulse_plot); self.pulse_panel.show_ao.toggled.connect(self.redraw_pulse_plot); self.pulse_panel.show_ai.toggled.connect(self.redraw_pulse_plot); self.tabs.addTab(self.pulse_panel,'Pulse Stimulus')
+        self.pulse_panel=PulseStimulusPanel(); self.pulse_panel.fire_button.clicked.connect(self.start_pulse_measurement); self.pulse_panel.save_button.clicked.connect(self.save_pulse_data); self.pulse_panel.save_image_button.clicked.connect(self.save_pulse_plot_image); self.pulse_panel.reset_button.clicked.connect(self.reset_pulse_plot); self.pulse_panel.show_ao.toggled.connect(self.redraw_pulse_plot); self.pulse_panel.show_ai.toggled.connect(self.redraw_pulse_plot); self.pulse_panel.duration.valueChanged.connect(self.redraw_pulse_plot); self.tabs.addTab(self.pulse_panel,'Pulse Stimulus')
         self.prc_panel=PRCPanel(); self.tabs.addTab(self.prc_panel,'PRC')
         self.voltage_current_panel=VoltageCurrentPanel(); self.tabs.addTab(self.voltage_current_panel,'電圧-電流')
         self._setup_voltage_current_panel()
@@ -533,7 +533,7 @@ class NevClientWindow(QMainWindow):
         """最後に取得したPULSE波形をCSVへ保存する。"""
         if not self.pulse_results:return self._error('保存できるPULSEデータがありません')
         client_dir=Path(__file__).resolve().parent
-        path,_=QFileDialog.getSaveFileName(self,'PULSEデータ保存',str(client_dir/'output.csv'),'CSV (*.csv)')
+        path,_=QFileDialog.getSaveFileName(self,'PULSEデータ保存',str(client_dir/'pulse.csv'),'CSV (*.csv)')
         if not path:return
         if Path(path).suffix.lower()!='.csv':path += '.csv'
         try:
