@@ -8,7 +8,7 @@ from PyQt6.QtCore import QObject, Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QGroupBox, QFormLayout,
     QPushButton, QComboBox, QLabel, QDoubleSpinBox, QSpinBox, QTableWidget,
-    QTableWidgetItem, QFileDialog,
+    QTableWidgetItem, QFileDialog, QCheckBox,
 )
 
 
@@ -74,6 +74,9 @@ class PRCPanel(QWidget):
         self.toolbar = NavigationToolbar2QT(self.canvas, results)
         results_layout.addWidget(self.canvas, 3)
         results_layout.addWidget(self.toolbar)
+        self.show_error_bars = QCheckBox('エラーバーを表示')
+        self.show_error_bars.setToolTip('結果に誤差情報が含まれる場合に表示します')
+        results_layout.addWidget(self.show_error_bars)
         self.table = QTableWidget(0, 2)
         self.table.setHorizontalHeaderLabels(['位相 (ms)', 'PRC値'])
         self.table.setMinimumHeight(150)
@@ -81,12 +84,16 @@ class PRCPanel(QWidget):
         save_row = QHBoxLayout()
         self.save_button = QPushButton('結果をCSV保存…')
         self.save_button.setEnabled(False)
+        self.save_image_button = QPushButton('プロットを画像保存…')
+        self.save_image_button.setEnabled(False)
         save_row.addWidget(self.save_button)
+        save_row.addWidget(self.save_image_button)
         save_row.addStretch(1)
         results_layout.addLayout(save_row)
         split.addWidget(results)
         split.setSizes([360, 850])
         self.result_rows = []
+        self.show_error_bars.toggled.connect(self._redraw_results)
         self.output.currentIndexChanged.connect(self.update_baseline)
 
     def set_outputs(self, devices):
@@ -127,24 +134,36 @@ class PRCPanel(QWidget):
         self.result_rows = rows
         self.table.setRowCount(len(rows))
         for row_index, row in enumerate(rows):
-            for column, value in enumerate(row):
+            for column, value in enumerate(row[:2]):
                 self.table.setItem(row_index, column, QTableWidgetItem(f'{value:.9g}'))
+        self._redraw_results()
+        self.save_button.setEnabled(bool(rows))
+        self.save_image_button.setEnabled(bool(rows))
+        self.status.setText(f'完了: {len(rows)}位相点')
+
+    def _redraw_results(self, *_args):
+        """誤差情報がある場合だけ、選択に応じてエラーバーを描く。"""
         self.ax.clear()
         self.ax.grid(True)
+        rows = self.result_rows
         if rows:
-            self.ax.plot([row[0] for row in rows], [row[1] for row in rows], marker='o')
+            phases = [row[0] for row in rows]
+            values = [row[1] for row in rows]
+            if self.show_error_bars.isChecked() and all(len(row) >= 3 for row in rows):
+                self.ax.errorbar(phases, values, yerr=[abs(row[2]) for row in rows], marker='o', capsize=3)
+            else:
+                self.ax.plot(phases, values, marker='o')
         self.ax.set_xlabel('Phase (ms)')
         self.ax.set_ylabel('PRC value')
         self.fig.tight_layout()
         self.canvas.draw_idle()
-        self.save_button.setEnabled(bool(rows))
-        self.status.setText(f'完了: {len(rows)}位相点')
 
 
 class PRCMeasurementJob(QObject):
     """SET/RUN/GET PRCを順に送り、結果6列を取り出す。"""
     done = pyqtSignal(object, object)
     progress = pyqtSignal(str)
+    points_updated = pyqtSignal(object)
 
     def __init__(self, tcp, device, channel, max_phase, phase_step, repeats,
                  threshold, pulse_width, pulse_amplitude):
@@ -197,6 +216,7 @@ class PRCMeasurementJob(QObject):
         self.progress.emit('GET PRC STAT: 完了状態を確認しています…')
         deadline = time.monotonic() + 1800
         readable_points = 0
+        rows = []
         while time.monotonic() < deadline:
             print("[PRC] -> 'GET PRC STAT\\n'", flush=True)
             self.tcp.send('GET PRC STAT\n')
@@ -242,6 +262,12 @@ class PRCMeasurementJob(QObject):
                 f'{readable_points}/{expected_points}点取得可能 '
                 f'(位相 {current_phase:g} ms)'
             )
+            # STATで新しいポイントを確認したら、その範囲だけ取得して画面へ渡す。
+            if readable_points > len(rows):
+                new_rows = self._get_data(len(rows))
+                if new_rows:
+                    rows.extend(new_rows)
+                    self.points_updated.emit(list(rows))
             if state in {'ERROR', 'FAILED', 'ABORTED'}:
                 raise RuntimeError(f'PRC計測が失敗しました: {stat_line}')
             if state == 'UNKNOWN':
@@ -258,11 +284,19 @@ class PRCMeasurementJob(QObject):
         else:
             raise TimeoutError('PRC計測が30分以内に完了しませんでした')
 
-        self.progress.emit(f'GET PRC DATA 0-: {readable_points}点を取得中…')
-        print("[PRC] -> 'GET PRC DATA 0-\\n'", flush=True)
-        self.tcp.send('GET PRC DATA 0-\n')
-        response = self.tcp.recv(timeout=120)
-        self._print_response('GET PRC DATA 0-', response)
+        if readable_points > len(rows):
+            self.progress.emit(f'GET PRC DATA {len(rows)}-: 残りを取得中…')
+            rows.extend(self._get_data(len(rows), timeout=120))
+            self.points_updated.emit(list(rows))
+        return rows
+
+    def _get_data(self, start, timeout=30):
+        """指定した最初のポイント以降を取得し、位相とPRC値の組にする。"""
+        command = f'GET PRC DATA {start}-'
+        print(f'[PRC] -> {command!r}\\n', flush=True)
+        self.tcp.send(command + '\n')
+        response = self.tcp.recv(timeout=timeout)
+        self._print_response(command, response)
         if not response:
             raise RuntimeError('GET PRC DATAの応答がありません')
         data_index = next(
@@ -308,15 +342,11 @@ class PRCMeasurementJob(QObject):
             else:
                 rows.append((pending_phase, parsed[0]))
                 pending_phase = None
-        if not rows:
+        if not rows and requested_count:
             raise RuntimeError(f'GET PRC DATA応答に2列の結果行がありません: {response[:3]}')
         if requested_count is not None and len(rows) != requested_count:
             raise RuntimeError(
                 f'#PRCDATAは{requested_count}点の指定ですが、{len(rows)}点を読み取りました'
-            )
-        if readable_points and len(rows) < readable_points:
-            raise RuntimeError(
-                f'GET PRC STATは{readable_points}点ですが、DATAは{len(rows)}点でした'
             )
         return rows
 

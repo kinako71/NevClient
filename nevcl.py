@@ -5,7 +5,7 @@
 機器通信は nevcl_tcp.py / nevcl_daqmx.py / nevcl_niscope.py に分けている。
 画面配置や操作の流れを変えるときは主にこのファイルを編集する。
 """
-import csv, sys
+import csv, re, sys
 from pathlib import Path
 from datetime import datetime
 from PyQt6.QtCore import Qt, QTimer, QObject, QThread, pyqtSignal, QSettings
@@ -58,7 +58,7 @@ class NevClientWindow(QMainWindow):
         self.sweep_panel=SweepPanel(); self.fig=self.sweep_panel.fig; self.ax=self.sweep_panel.ax; self.canvas=self.sweep_panel.canvas; self.sweep_mode=self.sweep_panel.mode; self.sweep_param=self.sweep_panel.parameter; self.sweep_start=self.sweep_panel.start; self.sweep_stop=self.sweep_panel.stop; self.sweep_steps=self.sweep_panel.steps; self.sweep_dir=self.sweep_panel.direction; self.idelay=self.sweep_panel.initial_delay; self.period=self.sweep_panel.period; self.delay=self.sweep_panel.delay; self.frequency=self.sweep_panel.frequency; self.run_btn=self.sweep_panel.run_button; self.stop_btn=self.sweep_panel.stop_button; self.union_combo=self.sweep_panel.union; self.channel_plot_table=self.sweep_panel.channel_plot_table; self.sweep_x_axis=self.sweep_panel.x_axis
         self.error_bar=self.sweep_panel.error_bar; self.run_btn.clicked.connect(self.start_sweep); self.stop_btn.clicked.connect(self.stop_sweep); self.sweep_x_axis.currentIndexChanged.connect(self._plot_channel_settings_changed); self.sweep_panel.measurement_source.currentIndexChanged.connect(self._select_measurement_source); self.sweep_panel.save_button.clicked.connect(self.save_psa_data); self.sweep_panel.save_image_button.clicked.connect(self.save_psa_plot_image); self.sweep_mode.currentTextChanged.connect(self._select_sweep_mode); self.tabs.addTab(self.sweep_panel,'Parameter Sweeper')
         self.pulse_panel=PulseStimulusPanel(); self.pulse_panel.fire_button.clicked.connect(self.start_pulse_measurement); self.pulse_panel.save_button.clicked.connect(self.save_pulse_data); self.pulse_panel.save_image_button.clicked.connect(self.save_pulse_plot_image); self.pulse_panel.reset_button.clicked.connect(self.reset_pulse_plot); self.pulse_panel.show_ao.toggled.connect(self.redraw_pulse_plot); self.pulse_panel.show_ai.toggled.connect(self.redraw_pulse_plot); self.pulse_panel.duration.valueChanged.connect(self.redraw_pulse_plot); self.tabs.addTab(self.pulse_panel,'Pulse Stimulus')
-        self.prc_panel=PRCPanel(); self.prc_panel.run_button.clicked.connect(self.start_prc_measurement); self.prc_panel.save_button.clicked.connect(self.save_prc_data); self.tabs.addTab(self.prc_panel,'PRC')
+        self.prc_panel=PRCPanel(); self.prc_panel.run_button.clicked.connect(self.start_prc_measurement); self.prc_panel.save_button.clicked.connect(self.save_prc_data); self.prc_panel.save_image_button.clicked.connect(self.save_prc_plot_image); self.tabs.addTab(self.prc_panel,'PRC')
         self.voltage_current_panel=VoltageCurrentPanel(); self.tabs.addTab(self.voltage_current_panel,'電圧-電流')
         self._setup_voltage_current_panel()
         self.log=QPlainTextEdit(); self.log.setReadOnly(True); self.tabs.addTab(self.log,'通信ログ')
@@ -224,7 +224,12 @@ class NevClientWindow(QMainWindow):
     def _render_sets(self):
         # セット一覧とNCMODE/BDMODEの掃引範囲を作り直す。
         self.set_table.setRowCount(len(self.pset_cols))
-        for r,c in enumerate(self.pset_cols):self.set_table.setItem(r,0,QTableWidgetItem(self.raw[0][c])); self.set_table.setItem(r,1,QTableWidgetItem(''))
+        for r,c in enumerate(self.pset_cols):
+            self.set_table.setItem(r,0,QTableWidgetItem(self.raw[0][c]))
+            marker=QTableWidgetItem('●' if r==self.active_set else '○')
+            marker.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            marker.setFlags(marker.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.set_table.setItem(r,1,marker)
         names=self._labels(); self.sweep_param.clear(); self.sweep_param.addItems(names)
         self.scan_configs = {}
         for mode,key in [('NCMODE','NCMODE'),('BDMODE','BDMODE')]:
@@ -258,7 +263,13 @@ class NevClientWindow(QMainWindow):
     def select_set(self,r,c=0):
         # セットの値を2列の一覧へ表示する。各値欄は矢印で増減できる。
         if r<0 or r>=len(self.pset_cols):return
-        self.active_set=r; pc=self.pset_cols[r]; labels=self._labels(); ids=[]; values=[]
+        self.active_set=r
+        for row in range(self.set_table.rowCount()):
+            marker=QTableWidgetItem('●' if row==r else '○')
+            marker.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            marker.setFlags(marker.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.set_table.setItem(row,1,marker)
+        pc=self.pset_cols[r]; labels=self._labels(); ids=[]; values=[]
         for i,row in enumerate(self.raw[1:]):values.append(row[pc] if pc<len(row) else 0)
         labels=[labels[i] if i<len(labels) else f'Parameter {i+1}' for i in range(len(values))]
         idcol=self.cols.get('ID'); ids=[row[idcol] if idcol is not None and idcol<len(row) else '' for row in self.raw[1:]]
@@ -534,6 +545,7 @@ class NevClientWindow(QMainWindow):
             self.prc_job.moveToThread(self.prc_thread)
             self.prc_thread.started.connect(self.prc_job.run)
             self.prc_job.progress.connect(panel.status.setText)
+            self.prc_job.points_updated.connect(self._prc_points_updated)
             self.prc_job.done.connect(self._prc_measurement_finished)
             self.prc_job.done.connect(self.prc_thread.quit)
             self.prc_thread.finished.connect(self.prc_job.deleteLater)
@@ -556,11 +568,17 @@ class NevClientWindow(QMainWindow):
         panel.show_results(rows)
         self._log(f'PRC計測完了: {len(rows)} phase points')
 
+    def _prc_points_updated(self, rows):
+        """計測中に届いたPRCポイントを即時に表とプロットへ反映する。"""
+        self.prc_results = rows
+        self.prc_panel.show_results(rows)
+        self.prc_panel.status.setText(f'PRC計測中: {len(rows)}点を表示中')
+
     def save_prc_data(self):
         """PRCの位相とPRC値をCSVに保存する。"""
         if not self.prc_results:
             return self._error('保存できるPRC結果がありません')
-        default_path = Path(__file__).resolve().parent / 'prc.csv'
+        default_path = Path(__file__).resolve().parent / f'{self._parameter_set_filename("prc", "prc")}.csv'
         path, _ = QFileDialog.getSaveFileName(self, 'PRC結果を保存', str(default_path), 'CSV (*.csv)')
         if not path:
             return
@@ -601,11 +619,20 @@ class NevClientWindow(QMainWindow):
         self.pulse_panel.reset_button.setEnabled(False)
         self.pulse_panel.status.setText('プロットと取得結果をリセットしました')
 
+    def _parameter_set_filename(self, suffix, fallback):
+        """選択中セット名を付けた保存名を返す。"""
+        if self.active_set is None or self.active_set < 0 or self.active_set >= len(self.pset_cols) or not self.raw:
+            return fallback
+        name = self.raw[0][self.pset_cols[self.active_set]].strip()
+        name = re.sub(r'[\\/:*?"<>|\x00-\x1f]+', '_', name).strip(' .')
+        return f'{name}_{suffix}' if name else fallback
+
     def save_pulse_data(self):
         """最後に取得したPULSE波形をCSVへ保存する。"""
         if not self.pulse_results:return self._error('保存できるPULSEデータがありません')
         client_dir=Path(__file__).resolve().parent
-        path,_=QFileDialog.getSaveFileName(self,'PULSEデータ保存',str(client_dir/'pulse.csv'),'CSV (*.csv)')
+        default_name=f'{self._parameter_set_filename("pulse", "pulse")}.csv'
+        path,_=QFileDialog.getSaveFileName(self,'PULSEデータ保存',str(client_dir/default_name),'CSV (*.csv)')
         if not path:return
         if Path(path).suffix.lower()!='.csv':path += '.csv'
         try:
@@ -624,12 +651,26 @@ class NevClientWindow(QMainWindow):
         """PULSE結果グラフを画像ファイルとして保存する。"""
         if not self.pulse_results:return self._error('保存できるPULSEプロットがありません')
         client_dir=Path(__file__).resolve().parent
-        path,_=QFileDialog.getSaveFileName(self,'PULSEプロット画像保存',str(client_dir/'pulse.png'),'PNG画像 (*.png)')
+        default_name=f'{self._parameter_set_filename("pulse", "pulse")}.png'
+        path,_=QFileDialog.getSaveFileName(self,'PULSEプロット画像保存',str(client_dir/default_name),'PNG画像 (*.png)')
         if not path:return
         if Path(path).suffix.lower()!='.png':path += '.png'
         try:
             self.pulse_panel.fig.savefig(path,dpi=200,bbox_inches='tight')
             self.pulse_panel.status.setText(f'画像を保存しました: {Path(path).name}')
+        except Exception as error:self._error(str(error))
+
+    def save_prc_plot_image(self):
+        """PRC結果グラフを画像ファイルとして保存する。"""
+        if not self.prc_results:return self._error('保存できるPRCプロットがありません')
+        client_dir=Path(__file__).resolve().parent
+        default_name=f'{self._parameter_set_filename("prc", "prc")}.png'
+        path,_=QFileDialog.getSaveFileName(self,'PRCプロット画像保存',str(client_dir/default_name),'PNG画像 (*.png)')
+        if not path:return
+        if Path(path).suffix.lower()!='.png':path += '.png'
+        try:
+            self.prc_panel.fig.savefig(path,dpi=200,bbox_inches='tight')
+            self.prc_panel.status.setText(f'画像を保存しました: {Path(path).name}')
         except Exception as error:self._error(str(error))
 
     def save_psa_data(self):
