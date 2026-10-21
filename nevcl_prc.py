@@ -46,7 +46,7 @@ class PRCPanel(QWidget):
         self.threshold.setValue(70)
         form.addRow('AIしきい値 (mV)', self.threshold)
         self.pulse_width = _spin(.001, 1_000_000, .1)
-        self.pulse_width.setValue(4)
+        self.pulse_width.setValue(1)
         form.addRow('パルス幅 (ms)', self.pulse_width)
         self.pulse_amplitude = _spin(-10_000, 10_000, 1)
         self.pulse_amplitude.setValue(100)
