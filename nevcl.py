@@ -557,7 +557,7 @@ class NevClientWindow(QMainWindow):
         self._log(f'PRC計測完了: {len(rows)} phase points')
 
     def save_prc_data(self):
-        """PRCの位相・周期統計・PRC値をCSVに保存する。"""
+        """PRCの位相とPRC値をCSVに保存する。"""
         if not self.prc_results:
             return self._error('保存できるPRC結果がありません')
         default_path = Path(__file__).resolve().parent / 'prc.csv'
@@ -569,11 +569,7 @@ class NevClientWindow(QMainWindow):
         try:
             with open(path, 'w', newline='', encoding='utf-8') as output:
                 writer = csv.writer(output)
-                writer.writerow([
-                    'phase (ms)', 'first period change mean (s)',
-                    'first period change variance (s^2)', 'mean period (s)',
-                    'period variance (s^2)', 'PRC value',
-                ])
+                writer.writerow(['phase (ms)', 'PRC value'])
                 writer.writerows(self.prc_results)
             self.prc_panel.status.setText(f'CSVを保存しました: {Path(path).name}')
         except Exception as error:

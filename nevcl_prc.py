@@ -1,5 +1,6 @@
 """DAQmxを使ったPRC計測画面とサーバー通信。"""
 import re
+import time
 
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
 from matplotlib.figure import Figure
@@ -73,11 +74,8 @@ class PRCPanel(QWidget):
         self.toolbar = NavigationToolbar2QT(self.canvas, results)
         results_layout.addWidget(self.canvas, 3)
         results_layout.addWidget(self.toolbar)
-        self.table = QTableWidget(0, 6)
-        self.table.setHorizontalHeaderLabels([
-            '位相 (ms)', '初回周期変化 平均 (s)', '初回周期変化 分散 (s²)',
-            '平均周期 (s)', '周期 分散 (s²)', 'PRC値',
-        ])
+        self.table = QTableWidget(0, 2)
+        self.table.setHorizontalHeaderLabels(['位相 (ms)', 'PRC値'])
         self.table.setMinimumHeight(150)
         results_layout.addWidget(self.table, 2)
         save_row = QHBoxLayout()
@@ -125,7 +123,7 @@ class PRCPanel(QWidget):
         self.baseline.setText(f'AO基準値: {baseline:g} V（出力更新後の値）')
 
     def show_results(self, rows):
-        """6列のPRC結果を表とPRC曲線に反映する。"""
+        """位相とPRC値を表とPRC曲線に反映する。"""
         self.result_rows = rows
         self.table.setRowCount(len(rows))
         for row_index, row in enumerate(rows):
@@ -134,7 +132,7 @@ class PRCPanel(QWidget):
         self.ax.clear()
         self.ax.grid(True)
         if rows:
-            self.ax.plot([row[0] for row in rows], [row[5] for row in rows], marker='o')
+            self.ax.plot([row[0] for row in rows], [row[1] for row in rows], marker='o')
         self.ax.set_xlabel('Phase (ms)')
         self.ax.set_ylabel('PRC value')
         self.fig.tight_layout()
@@ -185,30 +183,68 @@ class PRCMeasurementJob(QObject):
             f'{self.threshold:.12g} {self.pulse_width:.12g} {self.pulse_amplitude:.12g}'
         )
         self._send_and_wait_ok('RUN PRC')
-        self.progress.emit('GET PRC: 計測完了と結果を待っています…')
-        self.tcp.send('GET PRC\n')
-        response = self.tcp.recv(timeout=300)
+        expected_points = int(self.max_phase // self.phase_step) + 1
+        self.progress.emit('GET PRC STAT: 完了状態を確認しています…')
+        deadline = time.monotonic() + 1800
+        readable_points = 0
+        while time.monotonic() < deadline:
+            self.tcp.send('GET PRC STAT\n')
+            response = self.tcp.recv(timeout=30)
+            if not response:
+                raise RuntimeError('GET PRC STATの応答がありません')
+            stat_line = next(
+                (line.strip() for line in response
+                 if re.search(r'#(?:GET)?PRCSTAT\b', line, re.IGNORECASE)),
+                None,
+            )
+            if stat_line is None:
+                raise RuntimeError(f'GET PRC STAT応答の形式が不正です: {response[:3]}')
+            fields = stat_line.split()
+            numbers = []
+            for field in fields[1:]:
+                if re.fullmatch(r'[-+]?\d+', field):
+                    numbers.append(int(field))
+            if not numbers:
+                raise RuntimeError(f'GET PRC STATからポイント数を読めません: {stat_line}')
+            readable_points = numbers[-1]
+            state = next(
+                (field.upper() for field in fields[1:]
+                 if re.search(r'[A-Za-z]', field)),
+                '',
+            )
+            self.progress.emit(
+                f'PRC計測中: {state or "状態確認中"} / {readable_points}点取得可能'
+            )
+            if state in {'ERROR', 'FAILED', 'ABORTED'}:
+                raise RuntimeError(f'PRC計測が失敗しました: {stat_line}')
+            if state and state not in {'RUNNING', 'BUSY', 'MEASURING', 'ACTIVE'}:
+                break
+            if not state and readable_points >= expected_points:
+                break
+            time.sleep(.25)
+        else:
+            raise TimeoutError('PRC計測が30分以内に完了しませんでした')
+
+        self.progress.emit(f'GET PRC DATA 0-: {readable_points}点を取得中…')
+        self.tcp.send('GET PRC DATA 0-\n')
+        response = self.tcp.recv(timeout=120)
         if not response:
-            raise RuntimeError('GET PRCの応答がありません')
+            raise RuntimeError('GET PRC DATAの応答がありません')
         rows = []
-        expected_count = None
         for line in response:
-            header = re.match(r'^#GETPRC\s+(\d+)', line.strip(), re.IGNORECASE)
-            if header:
-                expected_count = int(header.group(1))
-                continue
-            fields = re.split(r'[\s,]+', line.strip())
-            if len(fields) != 6:
+            cleaned = re.sub(r'[\[\]()]+', ' ', line.strip())
+            fields = re.split(r'[\s,]+', cleaned)
+            if len(fields) != 2:
                 continue
             try:
                 rows.append(tuple(float(field) for field in fields))
             except ValueError:
                 continue
-        if expected_count is not None and len(rows) != expected_count:
-            raise RuntimeError(
-                f'GET PRCは{expected_count}点の予定ですが、{len(rows)}行を受信しました'
-            )
         if not rows:
-            raise RuntimeError(f'GET PRC応答に6列の結果行がありません: {response[:3]}')
+            raise RuntimeError(f'GET PRC DATA応答に2列の結果行がありません: {response[:3]}')
+        if readable_points and len(rows) < readable_points:
+            raise RuntimeError(
+                f'GET PRC STATは{readable_points}点ですが、DATAは{len(rows)}点でした'
+            )
         return rows
 
