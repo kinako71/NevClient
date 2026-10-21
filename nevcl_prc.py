@@ -166,13 +166,23 @@ class PRCMeasurementJob(QObject):
             self.done.emit(None, error)
 
     def _send_and_wait_ok(self, command, timeout=30):
-        self.tcp.send(command.rstrip('\r\n') + '\n')
+        payload = command.rstrip('\r\n') + '\n'
+        print(f'[PRC] -> {payload!r}', flush=True)
+        self.tcp.send(payload)
         self.progress.emit(f'サーバー応答待ち: {command}')
         response = self.tcp.recv(timeout=timeout)
+        self._print_response(command, response)
         if response is None:
             raise RuntimeError(f'{command}に対する応答がありません')
         if any(line.lstrip().startswith('!') for line in response):
             raise RuntimeError(f'{command}が拒否されました: {response}')
+
+    @staticmethod
+    def _print_response(command, response):
+        if response is None:
+            print(f'[PRC] <- {command}: None', flush=True)
+        else:
+            print(f'[PRC] <- {command}: {response!r} [#OK]', flush=True)
 
     def measure(self):
         self._send_and_wait_ok(f'SET PRC {self.device.taskNo} {self.channel}')
@@ -188,8 +198,10 @@ class PRCMeasurementJob(QObject):
         deadline = time.monotonic() + 1800
         readable_points = 0
         while time.monotonic() < deadline:
+            print("[PRC] -> 'GET PRC STAT\\n'", flush=True)
             self.tcp.send('GET PRC STAT\n')
             response = self.tcp.recv(timeout=30)
+            self._print_response('GET PRC STAT', response)
             if not response:
                 raise RuntimeError('GET PRC STATの応答がありません')
             stat_index = next(
@@ -247,8 +259,10 @@ class PRCMeasurementJob(QObject):
             raise TimeoutError('PRC計測が30分以内に完了しませんでした')
 
         self.progress.emit(f'GET PRC DATA 0-: {readable_points}点を取得中…')
+        print("[PRC] -> 'GET PRC DATA 0-\\n'", flush=True)
         self.tcp.send('GET PRC DATA 0-\n')
         response = self.tcp.recv(timeout=120)
+        self._print_response('GET PRC DATA 0-', response)
         if not response:
             raise RuntimeError('GET PRC DATAの応答がありません')
         data_index = next(
