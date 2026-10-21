@@ -69,7 +69,7 @@ class PulseStimulusPanel(QWidget):
         self.pulse_width = _spin(.001, 1_000_000, .1, 3)
         self.pulse_width.setValue(4)
         self.pulse_amplitude = _spin(-10_000, 10_000, 1, 3)
-        self.pulse_amplitude.setValue(290)
+        self.pulse_amplitude.setValue(100)
         pulse_form.addRow('Delay (ms)', self.pulse_delay)
         pulse_form.addRow('Width (ms)', self.pulse_width)
         pulse_form.addRow('Amplitude (mV)', self.pulse_amplitude)
@@ -179,6 +179,7 @@ class PulseStimulusPanel(QWidget):
 class PulseMeasurementJob(QObject):
     """PULSEコマンドを順に送信し、有限計測結果を取得するワーカー。"""
     done = pyqtSignal(object, object)
+    progress = pyqtSignal(str)
 
     def __init__(self, tcp, device, channel, frequency, duration, delay, width, amplitude):
         super().__init__()
@@ -199,25 +200,32 @@ class PulseMeasurementJob(QObject):
 
     def _send_and_wait_ok(self, command):
         self.tcp.send(command)
-        response = self.tcp.recv()
+        self.progress.emit(f'サーバー応答待ち: {command}')
+        response = self.tcp.recv(timeout=max(30, self.duration + 30))
         if response is None:
             raise RuntimeError(f'サーバーから応答がありません: {command}')
         # recv()は#OK終端まで読み切る。情報行付きACKも許容する。
         if any(line.lstrip().startswith('!') for line in response):
             raise RuntimeError(f'{command}が拒否されました: {response}')
+        self.progress.emit(f'応答受信: {command}')
 
     def measure(self):
         if self.delay + self.width > self.duration * 1000:
             raise ValueError('遅延とパルス幅の合計が計測時間を超えています')
         # PULSEはAO task番号と物理AO番号を受け取る。
-        self._send_and_wait_ok(f'SET PULSE {self.device.taskNo} {self.channel}')
+        self.progress.emit('PULSE計測を設定中…')
+        # SET PULSEで設定モードに入り、仕様どおり数値行ごとのACKを待つ。
+        self.tcp.send(f'SET PULSE {self.device.taskNo} {self.channel}')
         self._send_and_wait_ok(f'{self.frequency} {self.duration:.12g}')
         self._send_and_wait_ok(
             f'{self.delay:.12g} {self.width:.12g} {self.amplitude:.12g}'
         )
 
+        self._send_and_wait_ok('RUN PULSE')
+
+        self.progress.emit('GET PULSEの応答待ち…')
         self.tcp.send('GET PULSE')
-        response = self.tcp.recv()
+        response = self.tcp.recv(timeout=max(30, self.duration + 30))
         if not response:
             raise RuntimeError('GET PULSEの応答がありません')
         header_index = next(

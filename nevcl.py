@@ -495,6 +495,7 @@ class NevClientWindow(QMainWindow):
                 self.pulse_panel.pulse_amplitude.value())
             self.pulse_job.moveToThread(self.pulse_thread)
             self.pulse_thread.started.connect(self.pulse_job.run)
+            self.pulse_job.progress.connect(self.pulse_panel.status.setText)
             self.pulse_job.done.connect(self._pulse_measurement_finished)
             self.pulse_job.done.connect(self.pulse_thread.quit)
             self.pulse_thread.finished.connect(self.pulse_job.deleteLater)

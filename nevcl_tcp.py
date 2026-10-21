@@ -12,6 +12,7 @@
 import select
 import socket
 import sys
+import time
 
 class nevcl_tcpCon():
     """TCPソケットを保持し、サーバーの#OK/#NG終端パケットを読み書きする。"""
@@ -92,7 +93,7 @@ class nevcl_tcpCon():
             break
         return rawdata.decode('utf-8')
             
-    def recv_raw(self):
+    def recv_raw(self, timeout=None):
         # #OK または #NG まで受信し、次の応答に続く余剰データはバッファに残す。
         """ data receiver (blocking)
         - returns a data block separated by "#OK"
@@ -100,14 +101,19 @@ class nevcl_tcpCon():
         """
         if self.dummy_mode:
             return self.recv_data_raw
-        while True:
-            readable, writable, exceptional = select.select([self.sock], [], [], self.timeout)
-            if len(readable) > 0:
-                break ;
+        deadline = None if timeout is None else time.monotonic() + timeout
         buf = self.resbuf  # load the residual data in the previous session
         if self.debug_mode:
             print("# recv_raw(): resbuf =", buf)
         while True:
+            wait = self.timeout
+            if deadline is not None:
+                wait = min(wait, max(0, deadline - time.monotonic()))
+            readable, writable, exceptional = select.select([self.sock], [], [], wait)
+            if not readable:
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise TimeoutError(f'サーバー応答が{timeout:g}秒以内にありません')
+                continue
             data = self._recv()
             if data is None:
                 return None, None
@@ -135,7 +141,7 @@ class nevcl_tcpCon():
                         residual += self._recv()
             buf = buf + data  # just add newly read data if no termination code found
 
-    def recv(self):
+    def recv(self, timeout=None):
         # 生データを改行区切りの文字列配列へ整形して返す。
         """ cooked data receiver (blocking)
             - returns an array of string (each element is separated by \n in the original string)
@@ -146,7 +152,7 @@ class nevcl_tcpCon():
         #    return self.recv_data
         if self.debug_mode:
             print("# nevl_tcpCon.recv()")
-        data, error = self.recv_raw()
+        data, error = self.recv_raw(timeout=timeout)
         if self.debug_mode:
             print("  [" + data + "]")
         if error is not None:
