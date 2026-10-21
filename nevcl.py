@@ -16,7 +16,8 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
 import nevcl_tcp, nevcl_daqmx, nevcl_niscope
 from nevcl_csvif import CsvParameterFile
 from nevcl_param import ATTRS, ParameterPanel
-from nevcl_psa import SweepPanel, PRCPanel
+from nevcl_psa import SweepPanel
+from nevcl_prc import PRCPanel, PRCMeasurementJob
 from nevcl_pulse import PulseStimulusPanel, PulseMeasurementJob
 from nevcl_vi import VoltageCurrentPanel, VoltageCurrentJob
 
@@ -38,7 +39,7 @@ class NevClientWindow(QMainWindow):
         # チャンネルごとのプロットオフセットを次回起動時にも読み込めるよう保存する。
         self.plot_offset_settings=QSettings('KohnoLab','NEVClientPyQt')
         self.address=address; self.tcp=None; self.daq=None; self.scope=None; self.csv_model=None; self.csv_path=None; self.raw=[]; self.cols={}; self.pset_cols=[]; self.active_set=None
-        self.voltage_current_results=None; self.pulse_results=[]; self.pulse_active=False
+        self.voltage_current_results=None; self.pulse_results=[]; self.pulse_active=False; self.prc_active=False; self.prc_results=[]
         self.sweep_active=False; self.sweep_bookmark=0; self.sweep_dirs=[]; self.psa_data=[]; self.channel_rows=[]; self.scope_channels=[]; self.daqmx_ai_channels=[]; self.sweep_channel_info=[]; self.sweep_data=[]; self.sweep_param_values=[]; self.active_stim_target=None
         self._build_ui(); self.timer=QTimer(self); self.timer.setInterval(400); self.timer.timeout.connect(self.poll_sweep)
         self.statusBar().showMessage(f'{address}:9000 | 未接続')
@@ -57,7 +58,7 @@ class NevClientWindow(QMainWindow):
         self.sweep_panel=SweepPanel(); self.fig=self.sweep_panel.fig; self.ax=self.sweep_panel.ax; self.canvas=self.sweep_panel.canvas; self.sweep_mode=self.sweep_panel.mode; self.sweep_param=self.sweep_panel.parameter; self.sweep_start=self.sweep_panel.start; self.sweep_stop=self.sweep_panel.stop; self.sweep_steps=self.sweep_panel.steps; self.sweep_dir=self.sweep_panel.direction; self.idelay=self.sweep_panel.initial_delay; self.period=self.sweep_panel.period; self.delay=self.sweep_panel.delay; self.frequency=self.sweep_panel.frequency; self.run_btn=self.sweep_panel.run_button; self.stop_btn=self.sweep_panel.stop_button; self.union_combo=self.sweep_panel.union; self.channel_plot_table=self.sweep_panel.channel_plot_table; self.sweep_x_axis=self.sweep_panel.x_axis
         self.error_bar=self.sweep_panel.error_bar; self.run_btn.clicked.connect(self.start_sweep); self.stop_btn.clicked.connect(self.stop_sweep); self.sweep_x_axis.currentIndexChanged.connect(self._plot_channel_settings_changed); self.sweep_panel.measurement_source.currentIndexChanged.connect(self._select_measurement_source); self.sweep_panel.save_button.clicked.connect(self.save_psa_data); self.sweep_panel.save_image_button.clicked.connect(self.save_psa_plot_image); self.sweep_mode.currentTextChanged.connect(self._select_sweep_mode); self.tabs.addTab(self.sweep_panel,'Parameter Sweeper')
         self.pulse_panel=PulseStimulusPanel(); self.pulse_panel.fire_button.clicked.connect(self.start_pulse_measurement); self.pulse_panel.save_button.clicked.connect(self.save_pulse_data); self.pulse_panel.save_image_button.clicked.connect(self.save_pulse_plot_image); self.pulse_panel.reset_button.clicked.connect(self.reset_pulse_plot); self.pulse_panel.show_ao.toggled.connect(self.redraw_pulse_plot); self.pulse_panel.show_ai.toggled.connect(self.redraw_pulse_plot); self.pulse_panel.duration.valueChanged.connect(self.redraw_pulse_plot); self.tabs.addTab(self.pulse_panel,'Pulse Stimulus')
-        self.prc_panel=PRCPanel(); self.tabs.addTab(self.prc_panel,'PRC')
+        self.prc_panel=PRCPanel(); self.prc_panel.run_button.clicked.connect(self.start_prc_measurement); self.prc_panel.save_button.clicked.connect(self.save_prc_data); self.tabs.addTab(self.prc_panel,'PRC')
         self.voltage_current_panel=VoltageCurrentPanel(); self.tabs.addTab(self.voltage_current_panel,'電圧-電流')
         self._setup_voltage_current_panel()
         self.log=QPlainTextEdit(); self.log.setReadOnly(True); self.tabs.addTab(self.log,'通信ログ')
@@ -71,7 +72,7 @@ class NevClientWindow(QMainWindow):
     def start_voltage_current_measurement(self):
         # viplot.pyと同じ範囲・出力チャンネルの測定をワーカースレッドで開始する。
         panel=self.voltage_current_panel
-        if self.pulse_active:return self._error('PULSE計測中は電圧–電流計測を開始できません')
+        if self.pulse_active or self.prc_active:return self._error('DAQmx計測中は電圧–電流計測を開始できません')
         try:
             sweep_output=panel.sweep_channel.currentData()
             if sweep_output is None:raise ValueError('DAQmxの動的AOチャンネルを選択してください。先にサーバーへ接続してください。')
@@ -165,7 +166,7 @@ class NevClientWindow(QMainWindow):
         def done(res,err):
             self.run_btn.setEnabled(True)
             if err:self.statusBar().showMessage('接続に失敗しました'); self._error(str(err)); return
-            self.statusBar().showMessage(self.address+' に接続しました'); self._log(res); self._refresh_devices(); self.pulse_panel.set_outputs(self.daq.aos); self.voltage_current_panel.set_outputs(self.daq.aos); self._refresh_scope_channels()
+            self.statusBar().showMessage(self.address+' に接続しました'); self._log(res); self._refresh_devices(); self.pulse_panel.set_outputs(self.daq.aos); self.prc_panel.set_outputs(self.daq.aos); self.voltage_current_panel.set_outputs(self.daq.aos); self._refresh_scope_channels()
         self._start_job(connect,done)
 
     def _refresh_devices(self):
@@ -303,7 +304,7 @@ class NevClientWindow(QMainWindow):
 
     def drive_outputs(self):
         # 選択セットの全パラメータ値をDAQmx出力へ反映する。
-        if self.pulse_active:return self._error('PULSE計測中はDAQmx出力を更新できません')
+        if self.pulse_active or self.prc_active:return self._error('DAQmx計測中は出力を更新できません')
         if not self.daq or not self.raw or self.active_set is None:return self._error('接続してCSVセットを選択してください')
         try:
             pcol=self.pset_cols[self.active_set]; labelcol=self.cols['LABEL']; devcol=self.cols['DEV']; chcol=self.cols['CH']
@@ -321,18 +322,18 @@ class NevClientWindow(QMainWindow):
                 self.daq.set_ch(dev,int(ch),[float(row[pcol])])
             ret=self.daq.update()
             if ret is None:raise RuntimeError('DAQmx出力の更新に失敗しました')
-            self._log('DAQmx outputs updated: '+str(ret)); self._refresh_devices()
+            self._log('DAQmx outputs updated: '+str(ret)); self._refresh_devices(); self.prc_panel.update_baseline()
         except Exception as e:self._error(str(e))
     def zero_clear(self):
         # DAQmx出力をゼロクリアする。
-        if self.pulse_active:return self._error('PULSE計測中はDAQmx出力を更新できません')
+        if self.pulse_active or self.prc_active:return self._error('DAQmx計測中は出力を更新できません')
         if not self.daq:return self._error('先に接続してください')
         try:self.daq.zeroclear(); self._log('DAQmx zero clear completed')
         except Exception as e:self._error(str(e))
 
     def start_sweep(self):
         # 掃引・NI-Scope設定をサーバーへ送り、初期待機後にPSAを開始する。
-        if self.pulse_active:return self._error('PULSE計測中はPSAを開始できません')
+        if self.pulse_active or self.prc_active:return self._error('DAQmx計測中はPSAを開始できません')
         if self.sweep_panel.measurement_source.currentData()=='daqmx':
             return self._error('DAQmx AIチャンネル一覧は表示できますが、AI波形の取得処理は未実装です。現在のスイープ実行にはNI-Scopeを選択してください。')
         if not self.scope or not self.daq or not self.raw:return self._error('接続し、パラメータCSVを読み込んでください')
@@ -474,7 +475,7 @@ class NevClientWindow(QMainWindow):
     def start_pulse_measurement(self):
         """指定条件をサーバーへ送り、同期パルス計測と結果取得を実行する。"""
         if not self.tcp or not self.daq:return self._error('先にDAQmx機器へ接続してください')
-        if self.sweep_active:return self._error('PSA実行中はPULSE計測を開始できません')
+        if self.sweep_active or self.prc_active:return self._error('別の計測中はPULSE計測を開始できません')
         ai_task=next((device for device in self.daq.ais if device.taskNo==0),None)
         if ai_task is None or ai_task.N_data < 1:
             return self._error('DAQMXINFOにAI task 0のチャンネルがありません')
@@ -501,6 +502,81 @@ class NevClientWindow(QMainWindow):
         except Exception as error:
             self.pulse_active=False
             self.pulse_panel.fire_button.setEnabled(True)
+            self._error(str(error))
+
+    def start_prc_measurement(self):
+        """PRC設定を送り、RUN PRC後にGET PRCの結果を受け取る。"""
+        if not self.tcp or not self.daq:
+            return self._error('先にサーバーへ接続してください')
+        if self.sweep_active or self.pulse_active or self.prc_active:
+            return self._error('別の計測中はPRCを開始できません')
+        if hasattr(self, 'voltage_current_thread') and self.voltage_current_thread.isRunning():
+            return self._error('電圧–電流計測中はPRCを開始できません')
+        ai_task = next((device for device in self.daq.ais if device.taskNo == 0), None)
+        if ai_task is None or ai_task.N_data < 1:
+            return self._error('DAQMXINFOにAI task 0のチャンネルがありません')
+        selected = self.prc_panel.output.currentData()
+        if not selected:
+            return self._error('DAQMXINFOにAO出力チャンネルがありません')
+        device, channel = selected
+        panel = self.prc_panel
+        try:
+            self.prc_active = True
+            panel.run_button.setEnabled(False)
+            panel.status.setText('PRC計測を設定しています…')
+            self.prc_thread = QThread(self)
+            self.prc_job = PRCMeasurementJob(
+                self.tcp, device, channel, panel.max_phase.value(),
+                panel.phase_step.value(), panel.repeats.value(),
+                panel.threshold.value(), panel.pulse_width.value(),
+                panel.pulse_amplitude.value(),
+            )
+            self.prc_job.moveToThread(self.prc_thread)
+            self.prc_thread.started.connect(self.prc_job.run)
+            self.prc_job.progress.connect(panel.status.setText)
+            self.prc_job.done.connect(self._prc_measurement_finished)
+            self.prc_job.done.connect(self.prc_thread.quit)
+            self.prc_thread.finished.connect(self.prc_job.deleteLater)
+            self.prc_thread.finished.connect(self.prc_thread.deleteLater)
+            self.prc_thread.start()
+        except Exception as error:
+            self.prc_active = False
+            panel.run_button.setEnabled(True)
+            self._error(str(error))
+
+    def _prc_measurement_finished(self, rows, error):
+        panel = self.prc_panel
+        self.prc_active = False
+        panel.run_button.setEnabled(True)
+        if error:
+            panel.status.setText('PRC計測に失敗しました')
+            self._error(str(error))
+            return
+        self.prc_results = rows
+        panel.show_results(rows)
+        self._log(f'PRC計測完了: {len(rows)} phase points')
+
+    def save_prc_data(self):
+        """PRCの位相・周期統計・PRC値をCSVに保存する。"""
+        if not self.prc_results:
+            return self._error('保存できるPRC結果がありません')
+        default_path = Path(__file__).resolve().parent / 'prc.csv'
+        path, _ = QFileDialog.getSaveFileName(self, 'PRC結果を保存', str(default_path), 'CSV (*.csv)')
+        if not path:
+            return
+        if Path(path).suffix.lower() != '.csv':
+            path += '.csv'
+        try:
+            with open(path, 'w', newline='', encoding='utf-8') as output:
+                writer = csv.writer(output)
+                writer.writerow([
+                    'phase (ms)', 'first period change mean (s)',
+                    'first period change variance (s^2)', 'mean period (s)',
+                    'period variance (s^2)', 'PRC value',
+                ])
+                writer.writerows(self.prc_results)
+            self.prc_panel.status.setText(f'CSVを保存しました: {Path(path).name}')
+        except Exception as error:
             self._error(str(error))
 
     def _pulse_measurement_finished(self,result,error):

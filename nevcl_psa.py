@@ -43,10 +43,5 @@ class SweepPanel(QWidget):
         save_buttons=QHBoxLayout(); self.save_button=QPushButton('取得データをCSV保存'); self.save_image_button=QPushButton('プロット画像保存'); save_buttons.addWidget(self.save_button); save_buttons.addWidget(self.save_image_button); plot_layout.addLayout(save_buttons)
         split.addWidget(plots); split.setSizes([380,700])
 
-class PRCPanel(QWidget):
-    """PRC表示用の空のプロット領域。"""
-    def __init__(self,parent=None):
-        super().__init__(parent); layout=QVBoxLayout(self)
-        self.fig,self.ax,self.canvas,self.toolbar=_plot(self)
 
 
