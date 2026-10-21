@@ -103,7 +103,9 @@ class PulseStimulusPanel(QWidget):
         results = QWidget()
         result_layout = QVBoxLayout(results)
         self.fig, self.ax, self.canvas, self.plot_toolbar = _plot(results)
-        self.ax.set_box_aspect(1)
+        # 結果波形は時間変化を読みやすくするため横長に表示する。
+        self.ax.set_box_aspect(0.55)
+        self.fig.subplots_adjust(left=0.12, right=0.98, top=0.96, bottom=0.20)
         self.ax.set_xlabel('Time (s)')
         self.ax.set_ylabel('Voltage (V)')
         self.save_button = QPushButton('取得データをCSV保存…')
@@ -173,6 +175,7 @@ class PulseStimulusPanel(QWidget):
             self.ax.legend(loc='best')
         self.ax.set_xlabel('Time (s)')
         self.ax.set_ylabel('Voltage (V)')
+        self.fig.tight_layout()
         self.canvas.draw_idle()
 
 
