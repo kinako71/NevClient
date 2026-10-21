@@ -6,7 +6,7 @@ from matplotlib.figure import Figure
 from PyQt6.QtCore import QObject, pyqtSignal, Qt
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QGroupBox, QFormLayout,
-    QPushButton, QComboBox, QLabel, QDoubleSpinBox,
+    QPushButton, QComboBox, QLabel, QDoubleSpinBox, QCheckBox,
 )
 
 
@@ -110,11 +110,21 @@ class PulseStimulusPanel(QWidget):
         self.ax.set_ylabel('Voltage (V)')
         self.save_button = QPushButton('取得データをCSV保存…')
         self.save_image_button = QPushButton('プロット画像保存…')
+        self.reset_button = QPushButton('Reset')
         self.save_button.setEnabled(False)
         self.save_image_button.setEnabled(False)
+        self.reset_button.setEnabled(False)
+        self.show_ao = QCheckBox('AO voltage')
+        self.show_ao.setChecked(True)
+        self.show_ai = QCheckBox('AI voltage')
+        self.show_ai.setChecked(True)
         save_row = QHBoxLayout()
         save_row.addWidget(self.save_button)
         save_row.addWidget(self.save_image_button)
+        save_row.addWidget(self.reset_button)
+        save_row.addStretch(1)
+        save_row.addWidget(self.show_ao)
+        save_row.addWidget(self.show_ai)
         result_layout.addLayout(save_row)
         split.addWidget(results)
         split.setSizes([440, 400])
@@ -162,16 +172,25 @@ class PulseStimulusPanel(QWidget):
         self.stim_ax.set_ylabel('Amplitude (mV)')
         self.stim_canvas.draw_idle()
 
-    def show_results(self, samples):
-        """時刻、AO電圧、AI電圧を同じ軸に重ねて表示する。"""
+    def show_results(self, runs):
+        """計測回ごとのAO/AI波形を、選択状態に応じて重ねて表示する。"""
         self.ax.clear()
         self.ax.grid(True)
-        if samples:
+        palette = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f']
+        for run_index, run in enumerate(runs):
+            samples = run['samples']
+            if not samples:
+                continue
             times = [row[0] for row in samples]
-            ao_values = [row[1] for row in samples]
-            ai_values = [row[2] for row in samples]
-            self.ax.plot(times, ao_values, label='AO voltage')
-            self.ax.plot(times, ai_values, label='AI voltage')
+            color = palette[run_index % len(palette)]
+            suffix = f' (run {run_index + 1})' if len(runs) > 1 else ''
+            if self.show_ao.isChecked():
+                self.ax.plot(times, [row[1] for row in samples], color=color,
+                             label='AO voltage' + suffix)
+            if self.show_ai.isChecked():
+                self.ax.plot(times, [row[2] for row in samples], color=color,
+                             linestyle='--', label='AI voltage' + suffix)
+        if self.ax.lines:
             self.ax.legend(loc='best')
         self.ax.set_xlabel('Time (s)')
         self.ax.set_ylabel('Voltage (V)')

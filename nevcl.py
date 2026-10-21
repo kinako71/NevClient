@@ -38,7 +38,7 @@ class NevClientWindow(QMainWindow):
         # チャンネルごとのプロットオフセットを次回起動時にも読み込めるよう保存する。
         self.plot_offset_settings=QSettings('KohnoLab','NEVClientPyQt')
         self.address=address; self.tcp=None; self.daq=None; self.scope=None; self.csv_model=None; self.csv_path=None; self.raw=[]; self.cols={}; self.pset_cols=[]; self.active_set=None
-        self.voltage_current_results=None; self.pulse_result=None; self.pulse_active=False
+        self.voltage_current_results=None; self.pulse_results=[]; self.pulse_active=False
         self.sweep_active=False; self.sweep_bookmark=0; self.sweep_dirs=[]; self.psa_data=[]; self.channel_rows=[]; self.scope_channels=[]; self.daqmx_ai_channels=[]; self.sweep_channel_info=[]; self.sweep_data=[]; self.sweep_param_values=[]; self.active_stim_target=None
         self._build_ui(); self.timer=QTimer(self); self.timer.setInterval(400); self.timer.timeout.connect(self.poll_sweep)
         self.statusBar().showMessage(f'{address}:9000 | 未接続')
@@ -56,7 +56,7 @@ class NevClientWindow(QMainWindow):
         self.tabs=QTabWidget(); split.addWidget(self.tabs); split.setSizes([570,880])
         self.sweep_panel=SweepPanel(); self.fig=self.sweep_panel.fig; self.ax=self.sweep_panel.ax; self.canvas=self.sweep_panel.canvas; self.sweep_mode=self.sweep_panel.mode; self.sweep_param=self.sweep_panel.parameter; self.sweep_start=self.sweep_panel.start; self.sweep_stop=self.sweep_panel.stop; self.sweep_steps=self.sweep_panel.steps; self.sweep_dir=self.sweep_panel.direction; self.idelay=self.sweep_panel.initial_delay; self.period=self.sweep_panel.period; self.delay=self.sweep_panel.delay; self.frequency=self.sweep_panel.frequency; self.run_btn=self.sweep_panel.run_button; self.stop_btn=self.sweep_panel.stop_button; self.union_combo=self.sweep_panel.union; self.channel_plot_table=self.sweep_panel.channel_plot_table; self.sweep_x_axis=self.sweep_panel.x_axis
         self.error_bar=self.sweep_panel.error_bar; self.run_btn.clicked.connect(self.start_sweep); self.stop_btn.clicked.connect(self.stop_sweep); self.sweep_x_axis.currentIndexChanged.connect(self._plot_channel_settings_changed); self.sweep_panel.measurement_source.currentIndexChanged.connect(self._select_measurement_source); self.sweep_panel.save_button.clicked.connect(self.save_psa_data); self.sweep_panel.save_image_button.clicked.connect(self.save_psa_plot_image); self.sweep_mode.currentTextChanged.connect(self._select_sweep_mode); self.tabs.addTab(self.sweep_panel,'Parameter Sweeper')
-        self.pulse_panel=PulseStimulusPanel(); self.pulse_panel.fire_button.clicked.connect(self.start_pulse_measurement); self.pulse_panel.save_button.clicked.connect(self.save_pulse_data); self.pulse_panel.save_image_button.clicked.connect(self.save_pulse_plot_image); self.tabs.addTab(self.pulse_panel,'Pulse Stimulus')
+        self.pulse_panel=PulseStimulusPanel(); self.pulse_panel.fire_button.clicked.connect(self.start_pulse_measurement); self.pulse_panel.save_button.clicked.connect(self.save_pulse_data); self.pulse_panel.save_image_button.clicked.connect(self.save_pulse_plot_image); self.pulse_panel.reset_button.clicked.connect(self.reset_pulse_plot); self.pulse_panel.show_ao.toggled.connect(self.redraw_pulse_plot); self.pulse_panel.show_ai.toggled.connect(self.redraw_pulse_plot); self.tabs.addTab(self.pulse_panel,'Pulse Stimulus')
         self.prc_panel=PRCPanel(); self.tabs.addTab(self.prc_panel,'PRC')
         self.voltage_current_panel=VoltageCurrentPanel(); self.tabs.addTab(self.voltage_current_panel,'電圧-電流')
         self._setup_voltage_current_panel()
@@ -482,10 +482,7 @@ class NevClientWindow(QMainWindow):
         if not selected:return self._error('DAQMXINFOにAO出力チャンネルがありません')
         device,channel=selected
         try:
-            self.pulse_result=None
             self.pulse_active=True
-            self.pulse_panel.save_button.setEnabled(False); self.pulse_panel.save_image_button.setEnabled(False)
-            self.pulse_panel.show_results([])
             self.pulse_panel.status.setText('PULSE設定を送信し、AI同期計測中…')
             self.pulse_panel.fire_button.setEnabled(False)
             self.pulse_thread=QThread(self)
@@ -512,29 +509,44 @@ class NevClientWindow(QMainWindow):
         if error:
             self.pulse_panel.status.setText('PULSE計測に失敗しました')
             self._error(str(error)); return
-        self.pulse_result=result
-        samples=result['samples']; self.pulse_panel.show_results(samples)
-        self.pulse_panel.save_button.setEnabled(bool(samples)); self.pulse_panel.save_image_button.setEnabled(bool(samples))
-        self.pulse_panel.status.setText(f'計測完了: {len(samples)} samples')
-        self._log(f'PULSE取得完了: {len(samples)} samples ({self.pulse_panel.output.currentText()})')
+        self.pulse_results.append(result)
+        samples=result['samples']; self.redraw_pulse_plot()
+        self.pulse_panel.save_button.setEnabled(bool(self.pulse_results)); self.pulse_panel.save_image_button.setEnabled(bool(self.pulse_results))
+        self.pulse_panel.reset_button.setEnabled(bool(self.pulse_results))
+        self.pulse_panel.status.setText(f'計測完了: {len(samples)} samples / {len(self.pulse_results)}回を重ねて表示')
+        self._log(f'PULSE取得完了: {len(samples)} samples (run {len(self.pulse_results)}, {self.pulse_panel.output.currentText()})')
+
+    def redraw_pulse_plot(self, *_args):
+        """AO/AIの表示切替に合わせ、蓄積した計測回を再描画する。"""
+        self.pulse_panel.show_results(self.pulse_results)
+
+    def reset_pulse_plot(self):
+        """重ねたPULSE結果と保存対象をすべて消去する。"""
+        self.pulse_results.clear()
+        self.redraw_pulse_plot()
+        self.pulse_panel.save_button.setEnabled(False)
+        self.pulse_panel.save_image_button.setEnabled(False)
+        self.pulse_panel.reset_button.setEnabled(False)
+        self.pulse_panel.status.setText('プロットと取得結果をリセットしました')
 
     def save_pulse_data(self):
         """最後に取得したPULSE波形をCSVへ保存する。"""
-        if not self.pulse_result:return self._error('保存できるPULSEデータがありません')
+        if not self.pulse_results:return self._error('保存できるPULSEデータがありません')
         client_dir=Path(__file__).resolve().parent
         path,_=QFileDialog.getSaveFileName(self,'PULSEデータ保存',str(client_dir/'output.csv'),'CSV (*.csv)')
         if not path:return
         if Path(path).suffix.lower()!='.csv':path += '.csv'
         try:
             with open(path,'w',newline='',encoding='utf-8') as output:
-                writer=csv.writer(output); writer.writerow(['time (s)','AO voltage (V)','AI voltage (V)'])
-                writer.writerows(self.pulse_result['samples'])
+                writer=csv.writer(output); writer.writerow(['run','time (s)','AO voltage (V)','AI voltage (V)'])
+                for run_index, run in enumerate(self.pulse_results, 1):
+                    writer.writerows((run_index, *sample) for sample in run['samples'])
             self.pulse_panel.status.setText(f'CSVを保存しました: {Path(path).name}')
         except Exception as error:self._error(str(error))
 
     def save_pulse_plot_image(self):
         """PULSE結果グラフを画像ファイルとして保存する。"""
-        if not self.pulse_result:return self._error('保存できるPULSEプロットがありません')
+        if not self.pulse_results:return self._error('保存できるPULSEプロットがありません')
         client_dir=Path(__file__).resolve().parent
         path,_=QFileDialog.getSaveFileName(self,'PULSEプロット画像保存',str(client_dir/'pulse.png'),'PNG画像 (*.png)')
         if not path:return
